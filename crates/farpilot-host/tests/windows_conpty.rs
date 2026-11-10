@@ -1,6 +1,7 @@
 #![cfg(windows)]
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use farpilot_host::herdr::HerdrConfig;
@@ -19,31 +20,43 @@ async fn conpty_preserves_utf8_ansi_and_resize() {
     .await
     .unwrap();
 
-    let output = tokio::time::timeout(Duration::from_secs(10), async {
-        let mut output = Vec::new();
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let reader_capture = captured.clone();
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let chunk = pty.read_output(16 * 1024).await.unwrap();
             if chunk.is_empty() {
-                break output;
+                break;
             }
+            let mut output = reader_capture.lock().unwrap();
             output.extend_from_slice(&chunk);
             if output
                 .windows("你好".len())
                 .any(|window| window == "你好".as_bytes())
                 && output.windows(3).any(|window| window == b"RED")
             {
-                break output;
+                break;
             }
         }
     })
-    .await
-    .expect("PowerShell fixture should produce output");
-
+    .await;
+    let output = captured.lock().unwrap();
+    assert!(
+        result.is_ok(),
+        "PowerShell fixture timed out; captured output: {:?}",
+        String::from_utf8_lossy(&output)
+    );
     assert!(
         output
             .windows("你好".len())
-            .any(|window| window == "你好".as_bytes())
+            .any(|window| window == "你好".as_bytes()),
+        "captured output: {:?}",
+        String::from_utf8_lossy(&output)
     );
-    assert!(output.windows(3).any(|window| window == b"RED"));
+    assert!(
+        output.windows(3).any(|window| window == b"RED"),
+        "captured output: {:?}",
+        String::from_utf8_lossy(&output)
+    );
     pty.close().await.unwrap();
 }
