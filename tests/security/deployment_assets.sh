@@ -2,7 +2,7 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 service="$root/deploy/gateway/farpilot-gateway.service"
-caddy="$root/deploy/gateway/Caddyfile"
+nginx="$root/deploy/gateway/farpilot.polly.wang.nginx"
 windows="$root/deploy/windows/install.ps1"
 
 grep -q '127.0.0.1:8787' "$service"
@@ -10,7 +10,11 @@ grep -q 'NoNewPrivileges=true' "$service"
 grep -q 'PrivateTmp=true' "$service"
 grep -q 'ProtectSystem=strict' "$service"
 grep -q 'ReadWritePaths=/var/lib/farpilot /run/farpilot' "$service"
-grep -q 'reverse_proxy 127.0.0.1:8787' "$caddy"
+grep -q 'proxy_pass http://127.0.0.1:8787' "$nginx"
+grep -q 'proxy_set_header Upgrade $http_upgrade' "$nginx"
+grep -q 'proxy_set_header Connection "upgrade"' "$nginx"
+grep -q 'proxy_read_timeout 86400s' "$nginx"
+grep -q 'limit_req zone=farpilot_pair' "$nginx"
 grep -q 'Get-FileHash -Algorithm SHA256' "$windows"
 grep -q 'Get-AuthenticodeSignature' "$windows"
 grep -q 'RunLevel Limited' "$windows"

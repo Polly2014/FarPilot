@@ -6,7 +6,7 @@
 
 **Architecture:** A Rust workspace supplies a shared protocol crate, Linux Gateway, Windows Host, and cross-platform CLI. Linux system OpenSSH invokes a restricted `farpilot gateway attach` command; Gateway multiplexes that terminal stream over the authenticated Host's WSS control connection; Host bridges the stream to a fixed Herdr executable under Windows ConPTY.
 
-**Tech Stack:** Rust stable, Tokio, Axum WebSockets/HTTP, rustls, Serde, Ed25519, SQLite/sqlx, portable-pty/Windows ConPTY, Clap, system OpenSSH, Caddy, PowerShell, cargo-nextest.
+**Tech Stack:** Rust stable, Tokio, Axum WebSockets/HTTP, rustls, Serde, Ed25519, SQLite/sqlx, portable-pty/Windows ConPTY, Clap, system OpenSSH, Nginx, Certbot, PowerShell, cargo-nextest.
 
 **Approved specification:** `X-Workspace/FarPilot/docs/specs/2026-11-11-farpilot-mvp-design.md`
 
@@ -67,7 +67,7 @@ X-Workspace/FarPilot/
 │       ├── src/device_cmd.rs          # devices/revoke
 │       └── src/qr.rs                  # Console QR renderer
 ├── deploy/
-│   ├── gateway/Caddyfile
+│   ├── gateway/farpilot.polly.wang.nginx
 │   ├── gateway/farpilot-gateway.service
 │   ├── gateway/sshd_config.fragment
 │   ├── gateway/install.sh
@@ -723,7 +723,7 @@ Expected: parsing, file atomicity, confirmation, and redaction tests pass.
 ### Task 11: Gateway and Windows deployment assets
 
 **Files:**
-- Create: `deploy/gateway/Caddyfile`
+- Create: `deploy/gateway/farpilot.polly.wang.nginx`
 - Create: `deploy/gateway/farpilot-gateway.service`
 - Create: `deploy/gateway/sshd_config.fragment`
 - Create: `deploy/gateway/install.sh`
@@ -735,7 +735,7 @@ Expected: parsing, file atomicity, confirmation, and redaction tests pass.
 
 Shell test verifies:
 
-- Caddy exposes only HTTPS/WSS public application traffic;
+- Nginx exposes only HTTPS/WSS public application traffic and proxies WebSocket upgrades to loopback;
 - Gateway app binds loopback;
 - systemd uses dedicated unprivileged user, `NoNewPrivileges=true`, `PrivateTmp=true`, and writable paths limited to FarPilot state;
 - sshd Match block disables forwarding, X11, agent forwarding, and TTY-less arbitrary commands;
@@ -747,7 +747,7 @@ Expected: missing deployment files.
 
 - [x] **Step 3: Create Gateway service assets**
 
-Caddy routes `/v1/*`, `/pair/*`, `/health/*`, and `/ws/host` to `127.0.0.1:8787`. systemd starts `farpilot gateway serve` with an environment file readable only by the service user. OpenSSH dedicated account uses the generated authorized-keys file and no password authentication.
+Nginx routes `/v1/*`, `/pair/*`, `/health/*`, and `/ws/host` to `127.0.0.1:8787`; `/ws/host` sets Upgrade/Connection headers and long read/send timeouts, while Certbot manages TLS using the existing Azure pattern. systemd starts `farpilot gateway serve` with an environment file readable only by the service user. OpenSSH dedicated account uses the generated authorized-keys file and no password authentication.
 
 - [x] **Step 4: Create Windows installer**
 
@@ -813,7 +813,7 @@ Expected: zero failures and zero warnings.
 
 - [ ] **Step 1: Deploy Gateway to Polly's Azure VM**
 
-Follow the runbook. Do not reuse root or Polly's normal SSH account. Verify Caddy TLS, WSS upgrade, SQLite location, service sandbox, and dedicated restricted SSH user.
+Follow the runbook. Do not reuse root or Polly's normal SSH account. Verify Nginx/Certbot TLS, WSS upgrade, SQLite location, service sandbox, and dedicated restricted SSH user.
 
 - [ ] **Step 2: Install Host on Windows DevBox**
 

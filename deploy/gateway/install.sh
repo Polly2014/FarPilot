@@ -11,6 +11,8 @@ install -d -o farpilot -g farpilot -m 0700 /var/lib/farpilot /etc/farpilot
 install -o farpilot -g farpilot -m 0600 /dev/null /var/lib/farpilot/authorized_keys
 install -m 0644 "$(dirname "$0")/farpilot-gateway.service" /etc/systemd/system/farpilot-gateway.service
 install -m 0644 "$(dirname "$0")/sshd_config.fragment" /etc/ssh/sshd_config.d/90-farpilot.conf
+install -m 0644 "$(dirname "$0")/farpilot.polly.wang.nginx" /etc/nginx/sites-available/farpilot.polly.wang
+ln -sfn /etc/nginx/sites-available/farpilot.polly.wang /etc/nginx/sites-enabled/farpilot.polly.wang
 
 if [[ ! -f /etc/farpilot/gateway.env ]]; then
   cat > /etc/farpilot/gateway.env <<'EOF'
@@ -24,5 +26,7 @@ EOF
 fi
 
 sshd -t
+nginx -t
 systemctl daemon-reload
-echo "Edit /etc/farpilot/gateway.env, configure Caddy, then enable farpilot-gateway.service"
+systemctl reload nginx
+echo "Edit /etc/farpilot/gateway.env, run certbot --nginx -d farpilot.polly.wang, then enable farpilot-gateway.service"

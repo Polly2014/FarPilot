@@ -4,7 +4,7 @@
 
 - A private Azure VM with DNS pointing to it.
 - Azure NSG allows inbound TCP 22 and 443 only.
-- Caddy and OpenSSH Server are installed on the VM.
+- Nginx, Certbot, and OpenSSH Server are installed on the VM.
 - Native Windows 11 DevBox can make outbound WSS connections on TCP 443.
 - Herdr is installed in the DevBox user's `PATH`.
 
@@ -15,13 +15,13 @@ Never place real IPs, tokens, private keys, or company data in this repository.
 1. Build the Linux `farpilot` binary from a reviewed commit.
 2. Run `sudo deploy/gateway/install.sh target/release/farpilot`.
 3. Set `FARPILOT_PUBLIC_SSH_HOST`, SSH fingerprint, and database URL in `/etc/farpilot/gateway.env`.
-4. Install `deploy/gateway/Caddyfile` and set `FARPILOT_DOMAIN`.
-5. Run `sshd -t` and `caddy validate` before restart.
-6. Enable Caddy and `farpilot-gateway.service`.
+4. Install `deploy/gateway/farpilot.polly.wang.nginx` under `/etc/nginx/sites-available/` and enable it.
+5. Run `sshd -t` and `nginx -t`, then use `certbot --nginx -d farpilot.polly.wang`.
+6. Reload Nginx and enable `farpilot-gateway.service`.
 7. Verify `/health/live` and `/health/ready` over HTTPS.
 8. Create a five-minute enrollment code with `farpilot gateway enrollment create`.
 
-Rollback: stop FarPilot, restore previous binary/config, run `sshd -t`, then restart sshd and Caddy. Preserve SQLite and `authorized_keys` backups with mode 0600.
+Rollback: stop FarPilot, restore previous binary/config, run `sshd -t`, then restart sshd and reload Nginx. Preserve SQLite and `authorized_keys` backups with mode 0600.
 
 ## Windows DevBox
 
@@ -60,7 +60,7 @@ Rollback: revoke paired devices on Gateway, unregister the startup task, stop Fa
 ## Logs
 
 - Gateway: `journalctl -u farpilot-gateway`.
-- Caddy: system service logs.
+- Nginx: `/var/log/nginx/farpilot.polly.wang.*.log`.
 - Host: `%LOCALAPPDATA%\FarPilot` status/config only.
 
 Logs must not contain terminal payloads, prompts, repository content, private keys, or raw pairing tokens.

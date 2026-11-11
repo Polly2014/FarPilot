@@ -149,7 +149,7 @@ Stage 0 installs Gateway on Polly's Azure VM. Stage 1 packages the same service 
 
 - a dedicated Linux user;
 - system OpenSSH configuration for the restricted `farpilot` account;
-- HTTPS/WSS termination through Caddy or an equivalent reverse proxy;
+- HTTPS/WSS termination through the existing Azure Nginx service, with Let's Encrypt certificates managed by Certbot;
 - SQLite metadata storage;
 - a system service and health endpoint.
 
@@ -342,7 +342,7 @@ Planned supporting technologies:
 - Windows ConPTY bindings for the Host terminal adapter;
 - system OpenSSH on Gateway for Mac/Moshi compatibility;
 - SQLite for Gateway metadata;
-- Caddy for public TLS in the self-hosted deployment.
+- Nginx WebSocket reverse proxy and Certbot-managed Let's Encrypt TLS on the Azure Gateway.
 
 Exact crate selection belongs in the implementation plan and must be validated against current Windows and OpenSSH behavior before code is written.
 
