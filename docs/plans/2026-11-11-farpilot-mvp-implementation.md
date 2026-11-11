@@ -681,7 +681,7 @@ Attempt shell, `-L`, `-R`, agent forwarding, X11 forwarding, and arbitrary remot
 - Modify: `crates/farpilot-cli/src/main.rs`
 - Test: `crates/farpilot-cli/tests/cli.rs`
 
-- [ ] **Step 1: Write failing Clap contract tests**
+- [x] **Step 1: Write failing Clap contract tests**
 
 Use `assert_cmd` to verify these commands and required arguments:
 
@@ -698,19 +698,19 @@ farpilot revoke <device-id>
 
 Unknown flags and HTTP Gateway URLs must fail before network access.
 
-- [ ] **Step 2: Implement `host setup`**
+- [x] **Step 2: Implement `host setup`**
 
 Generate/protect Host identity, enroll over HTTPS, write local config atomically, connect once, request a five-minute client pairing token over authenticated WSS, and render URL + short code + Unicode QR.
 
-- [ ] **Step 3: Implement Mac `pair`**
+- [x] **Step 3: Implement Mac `pair`**
 
 Generate a dedicated Ed25519 key using `ssh-keygen` only when no FarPilot key exists; show fingerprint; claim token; retrieve Gateway SSH host fingerprint; require explicit confirmation before writing a `Host farpilot-<host-slug>` block to a FarPilot-owned include file. Do not edit unrelated SSH config lines.
 
-- [ ] **Step 4: Implement devices and revoke**
+- [x] **Step 4: Implement devices and revoke**
 
 List only metadata. Revoke asks for confirmation unless `--yes`, calls Gateway, rewrites `authorized_keys`, closes active channels, and prints the affected device fingerprint and Host grants.
 
-- [ ] **Step 5: Run CLI tests**
+- [x] **Step 5: Run CLI tests**
 
 ```bash
 cargo test --manifest-path X-Workspace/FarPilot/Cargo.toml -p farpilot-cli --test cli
@@ -731,7 +731,7 @@ Expected: parsing, file atomicity, confirmation, and redaction tests pass.
 - Create: `docs/stage0-runbook.md`
 - Test: `tests/security/sshd_restrictions.sh`
 
-- [ ] **Step 1: Write deployment static checks**
+- [x] **Step 1: Write deployment static checks**
 
 Shell test verifies:
 
@@ -741,23 +741,23 @@ Shell test verifies:
 - sshd Match block disables forwarding, X11, agent forwarding, and TTY-less arbitrary commands;
 - Windows installer writes only under user-local app data and creates no firewall rule/listener.
 
-- [ ] **Step 2: Verify static checks fail**
+- [x] **Step 2: Verify static checks fail**
 
 Expected: missing deployment files.
 
-- [ ] **Step 3: Create Gateway service assets**
+- [x] **Step 3: Create Gateway service assets**
 
 Caddy routes `/v1/*`, `/pair/*`, `/health/*`, and `/ws/host` to `127.0.0.1:8787`. systemd starts `farpilot gateway serve` with an environment file readable only by the service user. OpenSSH dedicated account uses the generated authorized-keys file and no password authentication.
 
-- [ ] **Step 4: Create Windows installer**
+- [x] **Step 4: Create Windows installer**
 
 PowerShell verifies Authenticode/checksum, installs `farpilot.exe` under `%LOCALAPPDATA%\FarPilot\bin`, writes no machine-wide PATH entry, and optionally creates a current-user logon Scheduled Task running `farpilot host start`. Uninstall removes only FarPilot task/binary/config after explicit confirmation and preserves a revocation warning.
 
-- [ ] **Step 5: Write Stage 0 runbook**
+- [x] **Step 5: Write Stage 0 runbook**
 
 Include DNS/TLS prerequisites, Azure NSG ports (22 and 443 only), Gateway installation, enrollment-token creation, DevBox setup, Mac pairing, Moshi manual key/profile flow, revocation drill, log locations, rollback, and verification that DevBox has no listening socket.
 
-- [ ] **Step 6: Run static checks**
+- [x] **Step 6: Run static checks**
 
 ```bash
 bash X-Workspace/FarPilot/tests/workspace_layout.sh
@@ -776,23 +776,23 @@ Expected: all checks pass.
 - Create: `tests/e2e/README.md`
 - Expand: crate integration tests
 
-- [ ] **Step 1: Build an in-process end-to-end fixture**
+- [x] **Step 1: Build an in-process end-to-end fixture**
 
 Fixture starts temporary SQLite Gateway, fake Host with fake PTY, enrolls Host, pairs device, opens attach, sends bytes/resize, disconnects, reconnects, and revokes device.
 
-- [ ] **Step 2: Add adversarial protocol cases**
+- [x] **Step 2: Add adversarial protocol cases**
 
 Test malformed frames, duplicate channel IDs, unauthorized Host IDs, replayed Host proofs, expired tokens, token races, oversized input, slow consumers, Host takeover, and reconnect with stale channel frames.
 
-- [ ] **Step 3: Add log-redaction test**
+- [x] **Step 3: Add log-redaction test**
 
 Send a unique sentinel as terminal payload and pairing secret, capture structured logs, and assert neither sentinel appears while connection IDs/outcomes do.
 
-- [ ] **Step 4: Add resource cleanup assertions**
+- [x] **Step 4: Add resource cleanup assertions**
 
 After every test, assert broker channel count is zero, Host task count returns to baseline, temporary PTY is closed, and SQLite transactions are complete.
 
-- [ ] **Step 5: Run full automated checks**
+- [x] **Step 5: Run full automated checks**
 
 ```bash
 cargo fmt --manifest-path X-Workspace/FarPilot/Cargo.toml --all -- --check

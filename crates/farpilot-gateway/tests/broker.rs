@@ -127,6 +127,7 @@ async fn host_disconnect_marks_offline_and_closes_channels() {
         attach.recv().await,
         Some(AttachEvent::Closed(SessionCloseReason::HostDisconnected))
     );
+    assert_eq!(broker.counts().await, (0, 0));
 }
 
 #[tokio::test]

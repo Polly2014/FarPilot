@@ -226,6 +226,11 @@ impl SessionBroker {
         self.state.lock().await.hosts.contains_key(host_id)
     }
 
+    pub async fn counts(&self) -> (usize, usize) {
+        let state = self.state.lock().await;
+        (state.hosts.len(), state.channels.len())
+    }
+
     async fn send_client_control(
         &self,
         channel_id: Uuid,
