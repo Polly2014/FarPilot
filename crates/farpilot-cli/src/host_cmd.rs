@@ -128,6 +128,6 @@ pub async fn start() -> anyhow::Result<()> {
             .connect_until_authenticated(&ReconnectPolicy::default())
             .await?;
         let herdr = HerdrConfig::new(config.herdr_executable, config.herdr_session)?;
-        connection.run_herdr(herdr).await
+        Ok(connection.run_herdr(herdr).await?)
     }
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -euxo pipefail
 
 if [[ $(id -u) -ne 0 ]]; then
   echo "run as root" >&2
