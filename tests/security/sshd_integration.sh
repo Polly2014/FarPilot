@@ -82,6 +82,11 @@ status=$?
 set -e
 [[ $status -ne 0 ]]
 [[ ! -e /tmp/farpilot-command-injection ]]
+if grep -q 'Permission denied' <<<"$output"; then
+  cat "$tmp/sshd.log" >&2
+  echo "$output" >&2
+  exit 1
+fi
 grep -q 'gateway.sock' <<<"$output"
 
 set +e

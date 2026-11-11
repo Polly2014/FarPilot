@@ -53,3 +53,25 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run workspace tests
         run: cargo test --workspace --all-targets
+      - name: Build Windows Stage 0 binary
+        if: runner.os == 'Windows'
+        run: cargo build --release -p farpilot-cli
+      - name: Upload Windows Stage 0 binary
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: farpilot-windows-x86_64-${{ github.sha }}
+          path: target/release/farpilot.exe
+          if-no-files-found: error
+          retention-days: 7
+      - name: Build Linux Stage 0 binary
+        if: runner.os == 'Linux'
+        run: cargo build --release -p farpilot-cli
+      - name: Upload Linux Stage 0 binary
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: farpilot-linux-x86_64-${{ github.sha }}
+          path: target/release/farpilot
+          if-no-files-found: error
+          retention-days: 7
