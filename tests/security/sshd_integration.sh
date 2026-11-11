@@ -32,6 +32,7 @@ ssh-keygen -q -t ed25519 -N '' -f "$tmp/client_key"
 device_id=device_0123456789abcdef0123456789abcdef
 printf 'restrict,command="/usr/local/bin/farpilot gateway attach --device-id %s" %s FarPilot-%s\n' \
   "$device_id" "$(cat "$tmp/client_key.pub")" "$device_id" > /var/lib/farpilot/authorized_keys
+chown "$user:$user" /var/lib/farpilot/authorized_keys
 chmod 0600 /var/lib/farpilot/authorized_keys
 
 cat > "$tmp/sshd_config" <<EOF

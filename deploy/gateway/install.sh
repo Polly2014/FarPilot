@@ -8,7 +8,7 @@ test -x "$binary"
 id farpilot >/dev/null 2>&1 || useradd --system --home /var/lib/farpilot --shell /bin/sh farpilot
 install -m 0755 "$binary" /usr/local/bin/farpilot
 install -d -o farpilot -g farpilot -m 0700 /var/lib/farpilot /etc/farpilot
-install -m 0600 /dev/null /var/lib/farpilot/authorized_keys
+install -o farpilot -g farpilot -m 0600 /dev/null /var/lib/farpilot/authorized_keys
 install -m 0644 "$(dirname "$0")/farpilot-gateway.service" /etc/systemd/system/farpilot-gateway.service
 install -m 0644 "$(dirname "$0")/sshd_config.fragment" /etc/ssh/sshd_config.d/90-farpilot.conf
 
