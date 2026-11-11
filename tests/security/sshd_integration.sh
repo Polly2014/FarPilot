@@ -44,6 +44,7 @@ PermitRootLogin no
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PubkeyAuthentication yes
+PermitUserEnvironment no
 LogLevel VERBOSE
 StrictModes no
 EOF

@@ -26,6 +26,15 @@ pub enum ControlFrame {
     HostReady {
         host_id: String,
     },
+    PairingCreate {
+        request_id: Uuid,
+    },
+    PairingCreated {
+        request_id: Uuid,
+        pairing_url: String,
+        secret: String,
+        expires_at_ms: u64,
+    },
     SessionOpen {
         channel_id: Uuid,
         device_id: String,

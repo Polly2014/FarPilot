@@ -14,7 +14,6 @@ grep -Eq '^[[:space:]]+AllowAgentForwarding no$' "$fragment"
 grep -Eq '^[[:space:]]+X11Forwarding no$' "$fragment"
 grep -Eq '^[[:space:]]+PermitTunnel no$' "$fragment"
 grep -Eq '^[[:space:]]+GatewayPorts no$' "$fragment"
-grep -Eq '^[[:space:]]+PermitUserEnvironment no$' "$fragment"
 grep -Eq '^[[:space:]]+AuthorizedKeysFile /var/lib/farpilot/authorized_keys$' "$fragment"
 
 if grep -Eq '^[[:space:]]*(ForceCommand|AllowTcpForwarding yes|AllowAgentForwarding yes)' "$fragment"; then

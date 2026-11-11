@@ -253,6 +253,15 @@ impl GatewayStore {
         Ok(())
     }
 
+    pub async fn list_active_devices(&self) -> Result<Vec<DeviceRecord>, StoreError> {
+        Ok(sqlx::query_as::<_, DeviceRecord>(
+            "SELECT id, display_name, ssh_public_key, fingerprint, created_at_ms, last_used_at_ms, revoked_at_ms \
+             FROM devices WHERE revoked_at_ms IS NULL ORDER BY display_name, id",
+        )
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     pub async fn insert_host_enrollment_token(
         &self,
         record: PairingTokenRecord,

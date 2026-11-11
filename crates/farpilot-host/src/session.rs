@@ -79,6 +79,10 @@ impl HostSessionRegistry {
             .map_err(|_| HostSessionError::SessionClosed)
     }
 
+    pub async fn finish(&self, channel_id: Uuid) {
+        self.sessions.lock().await.remove(&channel_id);
+    }
+
     pub async fn len(&self) -> usize {
         self.sessions.lock().await.len()
     }

@@ -40,7 +40,7 @@ tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["limit", "request-id", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-url = "2"
+url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 zeroize = { version = "1", features = ["derive"] }

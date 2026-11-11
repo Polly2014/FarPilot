@@ -12,5 +12,4 @@ Match User farpilot
     X11Forwarding no
     PermitTunnel no
     GatewayPorts no
-    PermitUserEnvironment no
     PermitTTY yes

@@ -12,6 +12,7 @@ use base64::engine::general_purpose::STANDARD;
 use ed25519_dalek::VerifyingKey;
 use farpilot_core::frame::{ControlFrame, FrameCodec, TerminalFrame};
 use farpilot_core::identity::HostProof;
+use farpilot_core::pairing::PairingToken;
 use futures_util::{SinkExt, StreamExt};
 use rand::RngCore;
 use rand::rngs::OsRng;
@@ -32,6 +33,7 @@ pub struct HostWsState {
     broker: SessionBroker,
     active: ActiveHosts,
     handshake_timeout: Duration,
+    pairing_base_url: String,
 }
 
 impl HostWsState {
@@ -41,11 +43,17 @@ impl HostWsState {
             store,
             active: Arc::new(Mutex::new(HashMap::new())),
             handshake_timeout: HANDSHAKE_TIMEOUT,
+            pairing_base_url: "https://localhost".into(),
         }
     }
 
     pub fn with_handshake_timeout(mut self, timeout: Duration) -> Self {
         self.handshake_timeout = timeout;
+        self
+    }
+
+    pub fn with_pairing_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.pairing_base_url = base_url.into().trim_end_matches('/').to_owned();
         self
     }
 
@@ -193,6 +201,24 @@ async fn handle_host(mut socket: WebSocket, state: HostWsState) {
                         match FrameCodec::decode_control(text.as_bytes()) {
                             Ok(ControlFrame::Ping { nonce }) => {
                                 let _ = send_control(&mut socket, &ControlFrame::Pong { nonce }).await;
+                            }
+                            Ok(ControlFrame::PairingCreate { request_id }) => {
+                                let now = SystemTime::now();
+                                let lifetime = Duration::from_secs(300);
+                                let token = PairingToken::generate(&host_id, now, lifetime);
+                                let expires_at_ms = system_time_ms(now + lifetime);
+                                if state.store.insert_pairing_token(token.record()).await.is_err() {
+                                    break;
+                                }
+                                let pairing_url = format!("{}/pair/{}", state.pairing_base_url, token.secret());
+                                if send_control(&mut socket, &ControlFrame::PairingCreated {
+                                    request_id,
+                                    pairing_url,
+                                    secret: token.secret().to_owned(),
+                                    expires_at_ms,
+                                }).await.is_err() {
+                                    break;
+                                }
                             }
                             Ok(frame) => {
                                 let _ = registered.send_control(frame).await;
