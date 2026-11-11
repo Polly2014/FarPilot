@@ -482,7 +482,12 @@ dependencies = [
 name = "farpilot-cli"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "bytes",
  "clap",
+ "farpilot-gateway",
+ "libc",
+ "tokio",
 ]
 
 [[package]]
@@ -505,6 +510,8 @@ dependencies = [
 name = "farpilot-gateway"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
  "axum",
  "base64",
  "bytes",
@@ -516,6 +523,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tower",

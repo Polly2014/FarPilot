@@ -367,6 +367,24 @@ impl GatewayStore {
         .await?)
     }
 
+    pub async fn authorized_hosts_for_device(
+        &self,
+        device_id: &str,
+    ) -> Result<Vec<HostRecord>, StoreError> {
+        Ok(sqlx::query_as::<_, HostRecord>(
+            "SELECT h.id, h.display_name, h.public_key, h.fingerprint, h.enrolled_at_ms, h.revoked_at_ms \
+             FROM hosts h \
+             JOIN device_host_grants g ON g.host_id = h.id \
+             JOIN devices d ON d.id = g.device_id \
+             WHERE d.id = ? AND d.revoked_at_ms IS NULL \
+               AND g.revoked_at_ms IS NULL AND h.revoked_at_ms IS NULL \
+             ORDER BY h.display_name, h.id",
+        )
+        .bind(device_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     pub async fn insert_pairing_token(&self, record: PairingTokenRecord) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO pairing_tokens \

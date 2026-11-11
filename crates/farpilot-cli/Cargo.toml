@@ -10,4 +10,11 @@ name = "farpilot"
 path = "src/main.rs"
 
 [dependencies]
+anyhow.workspace = true
+bytes.workspace = true
 clap.workspace = true
+farpilot-gateway = { path = "../farpilot-gateway" }
+tokio.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

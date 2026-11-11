@@ -1,9 +1,12 @@
 //! Linux Gateway library for FarPilot.
 
+pub mod attach;
+pub mod authorized_keys;
 pub mod broker;
 pub mod config;
 pub mod health;
 pub mod host_ws;
+pub mod local_attach;
 pub mod pairing_http;
 pub mod store;
 

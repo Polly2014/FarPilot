@@ -22,6 +22,7 @@ bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 futures-util = "0.3"
+libc = "0.2"
 portable-pty = "0.9"
 qrcode = "0.14"
 rand = "0.8"

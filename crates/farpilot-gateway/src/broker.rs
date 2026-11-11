@@ -80,6 +80,18 @@ impl SessionBroker {
         }
     }
 
+    pub async fn available_hosts_for_device(
+        &self,
+        device_id: &str,
+    ) -> Result<Vec<crate::store::HostRecord>, BrokerError> {
+        let authorized = self.store.authorized_hosts_for_device(device_id).await?;
+        let state = self.state.lock().await;
+        Ok(authorized
+            .into_iter()
+            .filter(|host| state.hosts.contains_key(&host.id))
+            .collect())
+    }
+
     pub async fn open(
         &self,
         device_id: &str,
@@ -214,6 +226,28 @@ impl SessionBroker {
         self.state.lock().await.hosts.contains_key(host_id)
     }
 
+    async fn send_client_control(
+        &self,
+        channel_id: Uuid,
+        frame: ControlFrame,
+        remove_after_send: bool,
+    ) -> Result<(), BrokerError> {
+        let mut state = self.state.lock().await;
+        let channel = state
+            .channels
+            .get(&channel_id)
+            .ok_or(BrokerError::UnknownChannel)?;
+        let host_id = channel.host_id.clone();
+        let host = state.hosts.get(&host_id).ok_or(BrokerError::HostOffline)?;
+        host.commands
+            .try_send(HostCommand::Control(frame))
+            .map_err(|_| BrokerError::HostBusy)?;
+        if remove_after_send {
+            remove_channel(&mut state, channel_id);
+        }
+        Ok(())
+    }
+
     async fn send_client_terminal(
         &self,
         channel_id: Uuid,
@@ -299,6 +333,33 @@ impl AttachHandle {
     pub async fn send_terminal(&self, payload: &[u8]) -> Result<(), BrokerError> {
         self.broker
             .send_client_terminal(self.channel_id, Bytes::copy_from_slice(payload))
+            .await
+    }
+
+    pub async fn resize(&self, cols: u16, rows: u16) -> Result<(), BrokerError> {
+        self.broker
+            .send_client_control(
+                self.channel_id,
+                ControlFrame::TerminalResize {
+                    channel_id: self.channel_id,
+                    cols,
+                    rows,
+                },
+                false,
+            )
+            .await
+    }
+
+    pub async fn close(&self, reason: SessionCloseReason) -> Result<(), BrokerError> {
+        self.broker
+            .send_client_control(
+                self.channel_id,
+                ControlFrame::SessionClose {
+                    channel_id: self.channel_id,
+                    reason,
+                },
+                true,
+            )
             .await
     }
 }

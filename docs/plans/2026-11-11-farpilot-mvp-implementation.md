@@ -635,7 +635,7 @@ Expected: portable fake tests pass now; real Windows test is required before Tas
 - Create: `crates/farpilot-cli/src/gateway_cmd.rs`
 - Test: `crates/farpilot-gateway/tests/ssh_attach.rs`
 
-- [ ] **Step 1: Write failing authorized-key rendering test**
+- [x] **Step 1: Write failing authorized-key rendering test**
 
 Expected line shape:
 
@@ -645,19 +645,19 @@ restrict,command="/usr/local/bin/farpilot gateway attach --device-id dev_123" ss
 
 Test shell metacharacters cannot enter device IDs, comments, or commands; only opaque UUID-derived IDs are accepted.
 
-- [ ] **Step 2: Write failing attach tests**
+- [x] **Step 2: Write failing attach tests**
 
 Inject fake stdin/stdout/resize source and fake broker. Verify attach identifies device from fixed CLI argument, displays Host picker only for authorized online Hosts, opens one channel, forwards bytes, forwards resize, and exits nonzero for offline/revoked devices.
 
-- [ ] **Step 3: Implement atomic `authorized_keys` writer**
+- [x] **Step 3: Implement atomic `authorized_keys` writer**
 
 Render all active device keys to a temporary file with mode 0600, `fsync`, and atomic rename. Preserve no unmanaged lines because the dedicated account's file is FarPilot-owned.
 
-- [ ] **Step 4: Implement attach bridge**
+- [x] **Step 4: Implement attach bridge**
 
 Read raw stdin and write raw stdout without interpreting terminal bytes. Observe Unix `SIGWINCH`, read terminal size, and send `TerminalResize`. Never invoke a shell or parse `SSH_ORIGINAL_COMMAND` as shell syntax.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 ```bash
 cargo test --manifest-path X-Workspace/FarPilot/Cargo.toml -p farpilot-gateway --test ssh_attach

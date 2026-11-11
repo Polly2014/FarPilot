@@ -28,6 +28,18 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+  ssh-security:
+    name: OpenSSH restriction integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install OpenSSH server
+        run: sudo apt-get update && sudo apt-get install -y openssh-server
+      - name: Verify forced command and forwarding restrictions
+        run: sudo --preserve-env=PATH bash tests/security/sshd_integration.sh
+
   test:
     name: Test (${{ matrix.os }})
     strategy:
