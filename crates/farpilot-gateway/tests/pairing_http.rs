@@ -157,7 +157,7 @@ async fn valid_pairing_page_and_claim_normalize_the_ssh_key() {
     let authorized = std::fs::read_to_string(&authorized_keys).unwrap();
     assert!(authorized.contains(claim["device_id"].as_str().unwrap()));
     assert!(authorized.contains(&paired_key));
-    assert!(authorized.contains("restrict,command=\"/usr/local/bin/farpilot gateway attach"));
+    assert!(authorized.contains("restrict,pty,command=\"/usr/local/bin/farpilot gateway attach"));
     let _ = std::fs::remove_file(authorized_keys);
 
     let consumed = app
