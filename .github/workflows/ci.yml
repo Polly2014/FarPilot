@@ -64,14 +64,20 @@ jobs:
           path: target/release/farpilot.exe
           if-no-files-found: error
           retention-days: 7
-      - name: Build Linux Stage 0 binary
+      - name: Install Linux static-build toolchain
         if: runner.os == 'Linux'
-        run: cargo build --release -p farpilot-cli
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+      - name: Build static Linux Stage 0 binary
+        if: runner.os == 'Linux'
+        run: cargo build --release -p farpilot-cli --target x86_64-unknown-linux-musl
       - name: Upload Linux Stage 0 binary
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: farpilot-linux-x86_64-${{ github.sha }}
-          path: target/release/farpilot
+          name: farpilot-linux-x86_64-musl-${{ github.sha }}
+          path: target/x86_64-unknown-linux-musl/release/farpilot
           if-no-files-found: error
           retention-days: 7
