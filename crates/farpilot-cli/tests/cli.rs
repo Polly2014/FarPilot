@@ -48,6 +48,16 @@ fn host_setup_rejects_non_https_gateway_before_network_access() {
 }
 
 #[test]
+fn revoke_rejects_invalid_device_id_before_database_access() {
+    let output = farpilot()
+        .args(["revoke", "device_bad;pkill", "--yes"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid device ID"));
+}
+
+#[test]
 fn unknown_flags_fail_closed() {
     let output = farpilot()
         .args(["devices", "--become-admin"])

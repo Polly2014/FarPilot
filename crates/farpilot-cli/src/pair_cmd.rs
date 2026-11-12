@@ -150,6 +150,12 @@ fn config_with_global_include(existing: &str, include: &str) -> String {
     }
 }
 
+fn home_dir() -> anyhow::Result<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("HOME is not set"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::config_with_global_include;
@@ -157,16 +163,11 @@ mod tests {
     #[test]
     fn farpilot_include_is_global_and_idempotent() {
         let include = "Include /home/polly/.ssh/farpilot_config";
-        let existing = "Host example\n  HostName example.com\nInclude /home/polly/.ssh/farpilot_config\n";
+        let existing =
+            "Host example\n  HostName example.com\nInclude /home/polly/.ssh/farpilot_config\n";
         let updated = config_with_global_include(existing, include);
         assert!(updated.starts_with(&format!("{include}\n\nHost example")));
         assert_eq!(updated.matches(include).count(), 1);
         assert_eq!(config_with_global_include(&updated, include), updated);
     }
-}
-
-fn home_dir() -> anyhow::Result<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("HOME is not set"))
 }

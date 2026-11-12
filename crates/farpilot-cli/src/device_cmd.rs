@@ -15,13 +15,42 @@ pub async fn list() -> anyhow::Result<()> {
 }
 
 pub async fn revoke(device_id: &str, confirmed: bool) -> anyhow::Result<()> {
+    validate_device_id(device_id)?;
     if !confirmed {
         anyhow::bail!("revoke requires --yes after reviewing the device ID")
     }
     let store = open_store().await?;
     store.revoke_device(device_id).await?;
     rewrite_authorized_keys(&store).await?;
+    terminate_active_attach(device_id)?;
     println!("Revoked {device_id}");
+    Ok(())
+}
+
+fn validate_device_id(device_id: &str) -> anyhow::Result<()> {
+    let Some(suffix) = device_id.strip_prefix("device_") else {
+        anyhow::bail!("invalid device ID")
+    };
+    if suffix.len() != 32 || !suffix.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        anyhow::bail!("invalid device ID")
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn terminate_active_attach(device_id: &str) -> anyhow::Result<()> {
+    let pattern = format!("/usr/local/bin/farpilot gateway attach --device-id {device_id}");
+    let status = std::process::Command::new("pkill")
+        .args(["-f", "--", &pattern])
+        .status()?;
+    if !status.success() && status.code() != Some(1) {
+        anyhow::bail!("failed to terminate active device session")
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn terminate_active_attach(_device_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
