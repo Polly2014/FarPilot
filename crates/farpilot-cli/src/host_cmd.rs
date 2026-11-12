@@ -140,7 +140,9 @@ pub async fn start() -> anyhow::Result<()> {
     }
     #[cfg(windows)]
     {
-        use farpilot_host::client::{HostClient, TransportSecurity};
+        use std::time::Instant;
+
+        use farpilot_host::client::{ConnectionErrorKind, HostClient, TransportSecurity};
         use farpilot_host::herdr::HerdrConfig;
         use farpilot_host::identity_store::FileIdentityStore;
         use farpilot_host::identity_store::windows::DpapiProtector;
@@ -156,10 +158,25 @@ pub async fn start() -> anyhow::Result<()> {
             identity,
             TransportSecurity::RequireTls,
         )?;
-        let connection = client
-            .connect_until_authenticated(&ReconnectPolicy::default())
-            .await?;
+        let policy = ReconnectPolicy::default();
         let herdr = HerdrConfig::new(config.herdr_executable, config.herdr_session)?;
-        Ok(connection.run_herdr(herdr).await?)
+        let mut post_auth_attempt = 0;
+        loop {
+            let connection = client.connect_until_authenticated(&policy).await?;
+            let connected_at = Instant::now();
+            match connection.run_herdr(herdr.clone()).await {
+                Ok(()) => eprintln!("FarPilot Gateway connection closed; reconnecting"),
+                Err(error) if error.kind() == ConnectionErrorKind::Permanent => {
+                    return Err(error.into());
+                }
+                Err(error) => eprintln!("FarPilot Gateway connection lost: {error}; reconnecting"),
+            }
+            if policy.should_reset_after(connected_at.elapsed()) {
+                post_auth_attempt = 0;
+            } else {
+                post_auth_attempt = post_auth_attempt.saturating_add(1);
+            }
+            policy.sleep_before_retry(post_auth_attempt).await;
+        }
     }
 }
