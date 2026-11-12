@@ -18,7 +18,7 @@ pub fn render_authorized_key(key: &AuthorizedDeviceKey) -> Result<String, Author
     validate_device_id(&key.device_id)?;
     validate_public_key(&key.ssh_public_key)?;
     Ok(format!(
-        "restrict,command=\"{FARPILOT_BINARY} gateway attach --device-id {}\" {} FarPilot-{}",
+        "restrict,pty,command=\"{FARPILOT_BINARY} gateway attach --device-id {}\" {} FarPilot-{}",
         key.device_id, key.ssh_public_key, key.device_id
     ))
 }

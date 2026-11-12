@@ -24,7 +24,7 @@ fn authorized_key_is_restricted_to_one_validated_device_command() {
 
     assert_eq!(
         rendered,
-        "restrict,command=\"/usr/local/bin/farpilot gateway attach --device-id device_0123456789abcdef0123456789abcdef\" ssh-ed25519 AAAATEST FarPilot-device_0123456789abcdef0123456789abcdef"
+        "restrict,pty,command=\"/usr/local/bin/farpilot gateway attach --device-id device_0123456789abcdef0123456789abcdef\" ssh-ed25519 AAAATEST FarPilot-device_0123456789abcdef0123456789abcdef"
     );
     assert_eq!(
         render_authorized_key(&AuthorizedDeviceKey {

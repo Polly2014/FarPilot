@@ -33,7 +33,7 @@ mkdir -p /run/sshd /var/lib/farpilot
 ssh-keygen -q -t ed25519 -N '' -f "$tmp/host_key"
 ssh-keygen -q -t ed25519 -N '' -f "$tmp/client_key"
 device_id=device_0123456789abcdef0123456789abcdef
-printf 'restrict,command="/usr/local/bin/farpilot gateway attach --device-id %s" %s FarPilot-%s\n' \
+printf 'restrict,pty,command="/usr/local/bin/farpilot gateway attach --device-id %s" %s FarPilot-%s\n' \
   "$device_id" "$(cat "$tmp/client_key.pub")" "$device_id" > /var/lib/farpilot/authorized_keys
 chown "$user:$user" /var/lib/farpilot/authorized_keys
 chmod 0600 /var/lib/farpilot/authorized_keys
@@ -92,6 +92,14 @@ if grep -q 'Permission denied' <<<"$output"; then
   exit 1
 fi
 grep -q 'gateway.sock' <<<"$output"
+
+set +e
+pty_output=$(ssh -tt "${ssh_opts[@]}" "$user@127.0.0.1" 2>&1)
+pty_status=$?
+set -e
+[[ $pty_status -ne 0 ]]
+! grep -q 'PTY allocation request failed' <<<"$pty_output"
+grep -q 'gateway.sock' <<<"$pty_output"
 
 set +e
 timeout 3 ssh "${ssh_opts[@]}" -N -L 127.0.0.1:22333:127.0.0.1:22 "$user@127.0.0.1" >"$tmp/local-forward.log" 2>&1
