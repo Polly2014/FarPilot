@@ -91,7 +91,7 @@ if grep -q 'Permission denied' <<<"$output"; then
   echo "$output" >&2
   exit 1
 fi
-grep -q 'gateway.sock' <<<"$output"
+grep -q 'interactive PTY required' <<<"$output"
 
 set +e
 pty_output=$(ssh -tt "${ssh_opts[@]}" "$user@127.0.0.1" 2>&1)

@@ -58,7 +58,7 @@ mod unix {
     }
 
     pub async fn run_attach(device_id: &str, socket_path: &Path) -> anyhow::Result<()> {
-        let _raw_mode = RawModeGuard::enable_if_terminal()?;
+        let _raw_mode = RawModeGuard::enable_required()?;
         let stream = UnixStream::connect(socket_path)
             .await
             .with_context(|| format!("connect to {}", socket_path.display()))?;
@@ -146,10 +146,12 @@ mod unix {
     }
 
     impl RawModeGuard {
-        fn enable_if_terminal() -> io::Result<Self> {
+        fn enable_required() -> io::Result<Self> {
             let fd = std::io::stdin().as_raw_fd();
             if unsafe { libc::isatty(fd) } != 1 {
-                return Ok(Self { original: None });
+                return Err(io::Error::other(
+                    "interactive PTY required; non-terminal SSH probes are not supported",
+                ));
             }
             let mut original = std::mem::MaybeUninit::<libc::termios>::uninit();
             if unsafe { libc::tcgetattr(fd, original.as_mut_ptr()) } != 0 {
