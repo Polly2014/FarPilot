@@ -132,16 +132,37 @@ fn write_ssh_profile(claim: &ClaimResponse, key_path: &Path, ssh_dir: &Path) -> 
     let main_config = ssh_dir.join("config");
     let include = format!("Include {}", include_path.display());
     let existing = fs::read_to_string(&main_config).unwrap_or_default();
-    if !existing.lines().any(|line| line.trim() == include) {
-        let mut updated = existing;
-        if !updated.is_empty() && !updated.ends_with('\n') {
-            updated.push('\n');
-        }
-        updated.push_str(&include);
-        updated.push('\n');
-        fs::write(main_config, updated)?;
-    }
+    fs::write(main_config, config_with_global_include(&existing, &include))?;
     Ok(())
+}
+
+fn config_with_global_include(existing: &str, include: &str) -> String {
+    let body = existing
+        .lines()
+        .filter(|line| line.trim() != include)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let body = body.trim_matches('\n');
+    if body.is_empty() {
+        format!("{include}\n")
+    } else {
+        format!("{include}\n\n{body}\n")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::config_with_global_include;
+
+    #[test]
+    fn farpilot_include_is_global_and_idempotent() {
+        let include = "Include /home/polly/.ssh/farpilot_config";
+        let existing = "Host example\n  HostName example.com\nInclude /home/polly/.ssh/farpilot_config\n";
+        let updated = config_with_global_include(existing, include);
+        assert!(updated.starts_with(&format!("{include}\n\nHost example")));
+        assert_eq!(updated.matches(include).count(), 1);
+        assert_eq!(config_with_global_include(&updated, include), updated);
+    }
 }
 
 fn home_dir() -> anyhow::Result<PathBuf> {
