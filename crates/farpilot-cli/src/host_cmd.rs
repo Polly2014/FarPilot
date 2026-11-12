@@ -160,7 +160,7 @@ pub async fn start() -> anyhow::Result<()> {
         )?;
         let policy = ReconnectPolicy::default();
         let herdr = HerdrConfig::new(config.herdr_executable, config.herdr_session)?;
-        let mut post_auth_attempt = 0;
+        let mut post_auth_attempt: u32 = 0;
         loop {
             let connection = client.connect_until_authenticated(&policy).await?;
             let connected_at = Instant::now();
