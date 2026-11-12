@@ -91,6 +91,38 @@ pub async fn setup(gateway: Url, enrollment_code: &str, name: &str) -> anyhow::R
     }
 }
 
+pub async fn pair() -> anyhow::Result<()> {
+    #[cfg(not(windows))]
+    {
+        anyhow::bail!("host pair currently requires native Windows")
+    }
+    #[cfg(windows)]
+    {
+        use farpilot_host::client::{HostClient, TransportSecurity};
+        use farpilot_host::identity_store::FileIdentityStore;
+        use farpilot_host::identity_store::windows::DpapiProtector;
+
+        let data_dir = default_data_dir()?;
+        let config = HostConfig::load(&data_dir.join("host.json"))?;
+        let identity = FileIdentityStore::new(data_dir.join("host-identity.json"), DpapiProtector)
+            .load_or_create()?;
+        let mut connection = HostClient::new(
+            config.gateway_wss()?.as_str(),
+            config.host_id,
+            identity,
+            TransportSecurity::RequireTls,
+        )?
+        .connect_once()
+        .await?;
+        let invitation = connection.create_pairing().await?;
+        println!("Pairing URL: {}", invitation.pairing_url);
+        println!("Expires at: {}", invitation.expires_at_ms);
+        println!("{}", qr::render(&invitation.pairing_url)?);
+        connection.close().await?;
+        Ok(())
+    }
+}
+
 pub fn status() -> anyhow::Result<()> {
     let path = default_data_dir()?.join("host.json");
     let config = HostConfig::load(&path)?;

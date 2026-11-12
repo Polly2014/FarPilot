@@ -9,6 +9,7 @@ fn planned_command_surface_is_present() {
     for args in [
         vec!["host", "setup", "--help"],
         vec!["host", "start", "--help"],
+        vec!["host", "pair", "--help"],
         vec!["host", "status", "--help"],
         vec!["gateway", "serve", "--help"],
         vec!["gateway", "enrollment", "create", "--help"],

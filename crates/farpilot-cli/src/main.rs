@@ -58,6 +58,8 @@ enum HostCommand {
     },
     /// Start the outbound Host connection loop.
     Start,
+    /// Create a new five-minute client pairing invitation.
+    Pair,
     /// Show local Host and Gateway connection status.
     Status,
 }
@@ -119,6 +121,9 @@ async fn main() -> anyhow::Result<()> {
         Command::Host {
             command: HostCommand::Start,
         } => host_cmd::start().await,
+        Command::Host {
+            command: HostCommand::Pair,
+        } => host_cmd::pair().await,
         Command::Host {
             command: HostCommand::Status,
         } => host_cmd::status(),
