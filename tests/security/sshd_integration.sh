@@ -22,8 +22,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cargo build --manifest-path "$root/Cargo.toml" -p farpilot-cli
-install -m 0755 "$root/target/debug/farpilot" /usr/local/bin/farpilot
+binary=${FARPILOT_TEST_BINARY:-$root/target/debug/farpilot}
+if [[ ! -x "$binary" ]]; then
+  cargo build --manifest-path "$root/Cargo.toml" -p farpilot-cli
+fi
+install -m 0755 "$binary" /usr/local/bin/farpilot
 id "$user" >/dev/null 2>&1 || useradd -M -d /nonexistent -s /bin/sh "$user"
 passwd -d "$user" >/dev/null
 mkdir -p /run/sshd /var/lib/farpilot

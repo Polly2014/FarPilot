@@ -16,9 +16,9 @@ env:
 jobs:
   quality:
     name: Format and lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -30,25 +30,29 @@ jobs:
 
   ssh-security:
     name: OpenSSH restriction integration
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install OpenSSH server
         run: sudo apt-get update && sudo apt-get install -y openssh-server
+      - name: Build FarPilot as runner user
+        run: cargo build -p farpilot-cli
       - name: Verify forced command and forwarding restrictions
-        run: sudo --preserve-env=PATH bash tests/security/sshd_integration.sh
+        env:
+          FARPILOT_TEST_BINARY: ${{ github.workspace }}/target/debug/farpilot
+        run: sudo --preserve-env=PATH,FARPILOT_TEST_BINARY bash tests/security/sshd_integration.sh
 
   test:
     name: Test (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run workspace tests
@@ -58,7 +62,7 @@ jobs:
         run: cargo build --release -p farpilot-cli
       - name: Upload Windows Stage 0 binary
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: farpilot-windows-x86_64-${{ github.sha }}
           path: target/release/farpilot.exe
@@ -75,7 +79,7 @@ jobs:
         run: cargo build --release -p farpilot-cli --target x86_64-unknown-linux-musl
       - name: Upload Linux Stage 0 binary
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: farpilot-linux-x86_64-musl-${{ github.sha }}
           path: target/x86_64-unknown-linux-musl/release/farpilot
