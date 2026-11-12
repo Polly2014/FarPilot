@@ -8,10 +8,14 @@ test -x "$binary"
 id farpilot >/dev/null 2>&1 || useradd --system --home /var/lib/farpilot --shell /bin/sh farpilot
 install -m 0755 "$binary" /usr/local/bin/farpilot
 install -d -o farpilot -g farpilot -m 0700 /var/lib/farpilot /etc/farpilot
-install -o farpilot -g farpilot -m 0600 /dev/null /var/lib/farpilot/authorized_keys
+if [[ ! -f /var/lib/farpilot/authorized_keys ]]; then
+  install -o farpilot -g farpilot -m 0600 /dev/null /var/lib/farpilot/authorized_keys
+fi
 install -m 0644 "$(dirname "$0")/farpilot-gateway.service" /etc/systemd/system/farpilot-gateway.service
 install -m 0644 "$(dirname "$0")/sshd_config.fragment" /etc/ssh/sshd_config.d/90-farpilot.conf
-install -m 0644 "$(dirname "$0")/farpilot.polly.wang.nginx" /etc/nginx/sites-available/farpilot.polly.wang
+if [[ ! -f /etc/nginx/sites-available/farpilot.polly.wang ]]; then
+  install -m 0644 "$(dirname "$0")/farpilot.polly.wang.nginx" /etc/nginx/sites-available/farpilot.polly.wang
+fi
 ln -sfn /etc/nginx/sites-available/farpilot.polly.wang /etc/nginx/sites-enabled/farpilot.polly.wang
 
 if [[ ! -f /etc/farpilot/gateway.env ]]; then
