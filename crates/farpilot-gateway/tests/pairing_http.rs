@@ -13,19 +13,22 @@ use farpilot_gateway::store::GatewayStore;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-async fn test_app() -> (axum::Router, GatewayStore) {
+async fn test_app() -> (axum::Router, GatewayStore, std::path::PathBuf) {
     let store = GatewayStore::connect("sqlite::memory:").await.unwrap();
+    let authorized_keys_path =
+        std::env::temp_dir().join(format!("farpilot-authorized-keys-{}", uuid::Uuid::new_v4()));
     let state = GatewayHttpState::new(
         store.clone(),
         GatewayConfig {
             public_ssh_host: "gateway.example.com".into(),
             public_ssh_port: 22,
             ssh_host_fingerprint: "SHA256:gateway-test".into(),
+            authorized_keys_path: authorized_keys_path.clone(),
             pairing_failure_limit: 5,
             pairing_failure_window: Duration::from_secs(60),
         },
     );
-    (build_router(state), store)
+    (build_router(state), store, authorized_keys_path)
 }
 
 fn request(method: &str, uri: &str, body: Body) -> Request<Body> {
@@ -61,7 +64,7 @@ fn ssh_ed25519_key(comment: &str) -> String {
 
 #[tokio::test]
 async fn host_enrollment_token_is_single_use() {
-    let (app, store) = test_app().await;
+    let (app, store, _authorized_keys) = test_app().await;
     let now = SystemTime::now();
     let token = PairingToken::generate("operator", now, Duration::from_secs(300));
     store
@@ -100,7 +103,7 @@ async fn host_enrollment_token_is_single_use() {
 
 #[tokio::test]
 async fn valid_pairing_page_and_claim_normalize_the_ssh_key() {
-    let (app, store) = test_app().await;
+    let (app, store, authorized_keys) = test_app().await;
     let host = store
         .enroll_host("Company DevBox", b"host-public-key")
         .await
@@ -151,6 +154,11 @@ async fn valid_pairing_page_and_claim_normalize_the_ssh_key() {
         .unwrap();
     assert!(!paired_key.contains("comment-is-discarded"));
     assert_eq!(paired_key.split_whitespace().count(), 2);
+    let authorized = std::fs::read_to_string(&authorized_keys).unwrap();
+    assert!(authorized.contains(claim["device_id"].as_str().unwrap()));
+    assert!(authorized.contains(&paired_key));
+    assert!(authorized.contains("restrict,command=\"/usr/local/bin/farpilot gateway attach"));
+    let _ = std::fs::remove_file(authorized_keys);
 
     let consumed = app
         .oneshot(request(
@@ -165,7 +173,7 @@ async fn valid_pairing_page_and_claim_normalize_the_ssh_key() {
 
 #[tokio::test]
 async fn invalid_expired_and_consumed_pairing_links_share_not_found() {
-    let (app, store) = test_app().await;
+    let (app, store, _authorized_keys) = test_app().await;
     let host = store
         .enroll_host("Company DevBox", b"host-public-key")
         .await
@@ -190,7 +198,7 @@ async fn invalid_expired_and_consumed_pairing_links_share_not_found() {
 
 #[tokio::test]
 async fn pairing_rejects_large_bodies_unknown_fields_and_control_characters() {
-    let (app, _store) = test_app().await;
+    let (app, _store, _authorized_keys) = test_app().await;
     let too_large = app
         .clone()
         .oneshot(request(
@@ -235,7 +243,7 @@ async fn pairing_rejects_large_bodies_unknown_fields_and_control_characters() {
 
 #[tokio::test]
 async fn failed_pairing_lookups_are_rate_limited_per_address() {
-    let (app, _store) = test_app().await;
+    let (app, _store, _authorized_keys) = test_app().await;
 
     for attempt in 0..6 {
         let response = app
@@ -258,7 +266,7 @@ async fn failed_pairing_lookups_are_rate_limited_per_address() {
 
 #[tokio::test]
 async fn health_endpoints_do_not_expose_registry_data() {
-    let (app, _store) = test_app().await;
+    let (app, _store, _authorized_keys) = test_app().await;
 
     for uri in ["/health/live", "/health/ready"] {
         let response = app

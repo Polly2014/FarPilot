@@ -14,6 +14,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 
+use crate::authorized_keys::{AuthorizedDeviceKey, write_authorized_keys};
 use crate::config::GatewayConfig;
 use crate::health;
 use crate::store::{GatewayStore, StoreError};
@@ -249,18 +250,27 @@ async fn claim_device(
         )
         .await
     {
-        Ok(device) => (
-            StatusCode::CREATED,
-            Json(ClaimDeviceResponse {
-                device_id: device.id,
-                host_id: preview.host_id,
-                ssh_host: state.config.public_ssh_host.clone(),
-                ssh_port: state.config.public_ssh_port,
-                ssh_username: "farpilot",
-                ssh_host_fingerprint: state.config.ssh_host_fingerprint.clone(),
-            }),
-        )
-            .into_response(),
+        Ok(device) => {
+            if sync_authorized_keys(&state).await.is_err() {
+                let _ = state.store.revoke_device(&device.id).await;
+                return error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "authorized_keys_update_failed",
+                );
+            }
+            (
+                StatusCode::CREATED,
+                Json(ClaimDeviceResponse {
+                    device_id: device.id,
+                    host_id: preview.host_id,
+                    ssh_host: state.config.public_ssh_host.clone(),
+                    ssh_port: state.config.public_ssh_port,
+                    ssh_username: "farpilot",
+                    ssh_host_fingerprint: state.config.ssh_host_fingerprint.clone(),
+                }),
+            )
+                .into_response()
+        }
         Err(StoreError::InvalidPairingToken) => {
             state.record_failure(address);
             error(StatusCode::NOT_FOUND, "pairing_not_found")
@@ -268,6 +278,21 @@ async fn claim_device(
         Err(StoreError::DeviceRevoked) => error(StatusCode::FORBIDDEN, "device_revoked"),
         Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
     }
+}
+
+async fn sync_authorized_keys(state: &GatewayHttpState) -> Result<(), ()> {
+    let keys = state
+        .store
+        .list_active_devices()
+        .await
+        .map_err(|_| ())?
+        .into_iter()
+        .map(|device| AuthorizedDeviceKey {
+            device_id: device.id,
+            ssh_public_key: device.ssh_public_key,
+        })
+        .collect::<Vec<_>>();
+    write_authorized_keys(&state.config.authorized_keys_path, &keys).map_err(|_| ())
 }
 
 async fn ready(State(state): State<GatewayHttpState>) -> Response {

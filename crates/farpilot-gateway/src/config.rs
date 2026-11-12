@@ -1,4 +1,5 @@
 use std::env;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use thiserror::Error;
@@ -8,6 +9,7 @@ pub struct GatewayConfig {
     pub public_ssh_host: String,
     pub public_ssh_port: u16,
     pub ssh_host_fingerprint: String,
+    pub authorized_keys_path: PathBuf,
     pub pairing_failure_limit: usize,
     pub pairing_failure_window: Duration,
 }
@@ -25,6 +27,9 @@ impl GatewayConfig {
             public_ssh_host,
             public_ssh_port,
             ssh_host_fingerprint,
+            authorized_keys_path: env::var_os("FARPILOT_AUTHORIZED_KEYS")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/var/lib/farpilot/authorized_keys")),
             pairing_failure_limit: 5,
             pairing_failure_window: Duration::from_secs(60),
         })
