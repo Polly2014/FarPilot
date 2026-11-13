@@ -145,6 +145,28 @@ function Install-Fixture {
     return $result
 }
 
+function Assert-PreMutationFailureState {
+    param(
+        [string]$Scenario,
+        [string]$ExpectedCurrent,
+        [string]$ExpectedBin,
+        [string]$ExpectedPathJson,
+        [string]$ExpectedTaskJson,
+        [string]$RejectedVersion,
+        [string]$Label
+    )
+    $root = Join-Path $Scenario 'FarPilot'
+    Assert-Equal -Expected $ExpectedCurrent -Actual (Get-JunctionTarget (Join-Path $root 'current')) -Message "$Label changed current"
+    Assert-Equal -Expected $ExpectedBin -Actual (Get-JunctionTarget (Join-Path $root 'bin')) -Message "$Label changed bin"
+    Assert-Equal -Expected $ExpectedPathJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $Scenario) 'path.json') -Raw) -Message "$Label changed PATH"
+    Assert-Equal -Expected $ExpectedTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $Scenario) 'task.json') -Raw) -Message "$Label changed task"
+    Assert-Equal -Expected 'identity-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $root 'host-identity.json') -Raw).Trim() -Message "$Label changed identity"
+    Assert-Equal -Expected 'config-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $root 'host-config.json') -Raw).Trim() -Message "$Label changed config"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $root "releases\$RejectedVersion-x86_64-pc-windows-msvc"))) "$Label left a new release"
+    $artifacts = @(Get-ChildItem -LiteralPath $root -Force -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.(staging|backup|legacy)\.' })
+    Assert-Equal -Expected 0 -Actual $artifacts.Count -Message "$Label left managed artifacts"
+}
+
 New-Item -ItemType Directory -Force -Path $TempRoot | Out-Null
 try {
     $fixtures = Join-Path $TempRoot 'fixtures'
@@ -229,6 +251,58 @@ try {
     $outsideResult = Invoke-InstallerProcess -LocalAppData $outside -PackagePath $packages['0.2.0'] -Version '0.2.0' -Sha256 (Get-FileHash -Algorithm SHA256 $packages['0.2.0']).Hash
     Assert-True ($outsideResult.ExitCode -ne 0) 'outside junction unexpectedly succeeded'
     Assert-Equal -Expected ([IO.Path]::GetFullPath($outsideTarget).TrimEnd('\')) -Actual (Get-JunctionTarget $outsideBin) -Message 'outside junction was retargeted'
+
+    # Dangling or incomplete in-root aliases are rejected before any mutable installer action.
+    foreach ($aliasName in @('current', 'bin')) {
+        $dangling = Initialize-ScenarioRoot ("dangling-" + $aliasName)
+        Install-Fixture -Scenario $dangling -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
+        $danglingRoot = Join-Path $dangling 'FarPilot'
+        'identity-sentinel' | Set-Content -LiteralPath (Join-Path $danglingRoot 'host-identity.json')
+        'config-sentinel' | Set-Content -LiteralPath (Join-Path $danglingRoot 'host-config.json')
+        $danglingTask = Get-TestState -LocalAppData $dangling -Name 'task'
+        $danglingTask.Running = $true
+        Write-TestStateFile -LocalAppData $dangling -Name 'task' -Value $danglingTask
+        $danglingPathJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $dangling) 'path.json') -Raw
+        $danglingTaskJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $dangling) 'task.json') -Raw
+        $otherAlias = if ($aliasName -eq 'current') { 'bin' } else { 'current' }
+        $otherTarget = Get-JunctionTarget (Join-Path $danglingRoot $otherAlias)
+        $missingTarget = Join-Path $danglingRoot 'releases\0.1.9-x86_64-pc-windows-msvc'
+        New-Item -ItemType Directory -Force -Path $missingTarget | Out-Null
+        $aliasPath = Join-Path $danglingRoot $aliasName
+        Remove-Item -LiteralPath $aliasPath -Force
+        New-Item -ItemType Junction -Path $aliasPath -Target $missingTarget | Out-Null
+        Remove-Item -LiteralPath $missingTarget -Recurse -Force
+        $danglingResult = Invoke-InstallerProcess -LocalAppData $dangling -PackagePath $packages['0.2.1'] -Version '0.2.1' -Sha256 (Get-FileHash -Algorithm SHA256 $packages['0.2.1']).Hash -EnableStartupTask
+        Assert-True ($danglingResult.ExitCode -ne 0) "$aliasName dangling alias unexpectedly succeeded"
+        $expectedCurrent = if ($aliasName -eq 'current') { [IO.Path]::GetFullPath($missingTarget).TrimEnd('\') } else { $otherTarget }
+        $expectedBin = if ($aliasName -eq 'bin') { [IO.Path]::GetFullPath($missingTarget).TrimEnd('\') } else { $otherTarget }
+        Assert-PreMutationFailureState -Scenario $dangling -ExpectedCurrent $expectedCurrent -ExpectedBin $expectedBin -ExpectedPathJson $danglingPathJson -ExpectedTaskJson $danglingTaskJson -RejectedVersion '0.2.1' -Label "$aliasName dangling alias"
+    }
+
+    $incompleteAlias = Initialize-ScenarioRoot 'incomplete-current-alias'
+    Install-Fixture -Scenario $incompleteAlias -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
+    $incompleteRoot = Join-Path $incompleteAlias 'FarPilot'
+    'identity-sentinel' | Set-Content -LiteralPath (Join-Path $incompleteRoot 'host-identity.json')
+    'config-sentinel' | Set-Content -LiteralPath (Join-Path $incompleteRoot 'host-config.json')
+    $incompleteTask = Get-TestState -LocalAppData $incompleteAlias -Name 'task'
+    $incompleteTask.Running = $true
+    Write-TestStateFile -LocalAppData $incompleteAlias -Name 'task' -Value $incompleteTask
+    $incompletePathJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $incompleteAlias) 'path.json') -Raw
+    $incompleteTaskJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $incompleteAlias) 'task.json') -Raw
+    $incompleteBinTarget = Get-JunctionTarget (Join-Path $incompleteRoot 'bin')
+    $incompleteTarget = Join-Path $incompleteRoot 'releases\0.1.8-x86_64-pc-windows-msvc'
+    New-Item -ItemType Directory -Force -Path $incompleteTarget | Out-Null
+    Remove-Item -LiteralPath (Join-Path $incompleteRoot 'current') -Force
+    New-Item -ItemType Junction -Path (Join-Path $incompleteRoot 'current') -Target $incompleteTarget | Out-Null
+    $incompleteResult = Invoke-InstallerProcess -LocalAppData $incompleteAlias -PackagePath $packages['0.2.1'] -Version '0.2.1' -Sha256 (Get-FileHash -Algorithm SHA256 $packages['0.2.1']).Hash -EnableStartupTask
+    Assert-True ($incompleteResult.ExitCode -ne 0) 'incomplete current alias unexpectedly succeeded'
+    Assert-PreMutationFailureState -Scenario $incompleteAlias -ExpectedCurrent ([IO.Path]::GetFullPath($incompleteTarget).TrimEnd('\')) -ExpectedBin $incompleteBinTarget -ExpectedPathJson $incompletePathJson -ExpectedTaskJson $incompleteTaskJson -RejectedVersion '0.2.1' -Label 'incomplete current alias'
+
+    $validOlderAlias = Initialize-ScenarioRoot 'valid-older-alias'
+    Install-Fixture -Scenario $validOlderAlias -Package $packages['0.2.0'] -Version '0.2.0' | Out-Null
+    Install-Fixture -Scenario $validOlderAlias -Package $packages['0.2.1'] -Version '0.2.1' | Out-Null
+    $validNewRelease = Join-Path $validOlderAlias 'FarPilot\releases\0.2.1-x86_64-pc-windows-msvc'
+    Assert-Equal -Expected ([IO.Path]::GetFullPath($validNewRelease).TrimEnd('\')) -Actual (Get-JunctionTarget (Join-Path $validOlderAlias 'FarPilot\current')) -Message 'valid older managed alias did not upgrade'
 
     # An incomplete destination release cannot disturb the current release.
     $failedActivationCurrent = Get-JunctionTarget (Join-Path $root 'current')
@@ -384,6 +458,8 @@ try {
     Assert-True ($source -match 'function\s+Restore-UserPath') 'PATH rollback boundary is missing'
     Assert-True ($source -match 'function\s+Get-ManagedFarPilotProcessState') 'process snapshot boundary is missing'
     Assert-True ($source -match 'Test-FileDigest\s+-Path\s+\$ReleaseExe') 'same-version release digest verification is missing'
+    Assert-True ($source -match 'function\s+Assert-ManagedReleaseTarget') 'managed alias target validation is missing'
+    Assert-True ($source -match 'function\s+Test-JunctionReleaseReference') 'rollback alias reference guard is missing'
 
     Write-Output 'FarPilot Windows installer behavior verified'
 } finally {

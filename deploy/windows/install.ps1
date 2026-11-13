@@ -280,6 +280,34 @@ function Get-JunctionTarget {
     return Get-CanonicalPath $target
 }
 
+function Assert-ManagedReleaseTarget {
+    param([string]$Target, [string]$ReleasesDir, [string]$AliasPath)
+    if (-not (Test-PathInside -Path $Target -Parent $ReleasesDir)) {
+        throw "Refusing FarPilot junction outside managed releases: $AliasPath -> $Target"
+    }
+    if (-not (Test-RegularDirectory $Target)) {
+        throw "FarPilot junction target is missing, unsafe, or not a regular directory: $AliasPath -> $Target"
+    }
+    $parent = Get-CanonicalPath (Split-Path -Parent $Target)
+    if ($parent -ine (Get-CanonicalPath $ReleasesDir)) {
+        throw "FarPilot junction target must be a direct release directory: $AliasPath -> $Target"
+    }
+    $releaseName = Split-Path -Leaf $Target
+    if ($releaseName -notmatch '^([0-9]+\.[0-9]+\.[0-9]+)-x86_64-pc-windows-msvc$') {
+        throw "FarPilot junction target has an invalid release name: $AliasPath -> $Target"
+    }
+    $expectedVersion = $Matches[1]
+    $entries = @(Get-ChildItem -LiteralPath $Target -Force)
+    $executable = Join-Path $Target 'farpilot.exe'
+    if ($entries.Count -ne 1 -or $entries[0].Name -ine 'farpilot.exe' -or -not (Test-RegularFile $executable)) {
+        throw "FarPilot junction target is an incomplete managed release: $AliasPath -> $Target"
+    }
+    $reportedVersion = Get-ExecutableVersion $executable
+    if ($reportedVersion -cne $expectedVersion) {
+        throw "FarPilot junction target version does not match its directory: $AliasPath -> $Target"
+    }
+}
+
 function Get-JunctionState {
     param(
         [string]$Path,
@@ -293,9 +321,7 @@ function Get-JunctionState {
     if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
         if ($item.LinkType -ne 'Junction') { throw "Refusing non-junction reparse point: $Path" }
         $target = Get-JunctionTarget $Path
-        if (-not (Test-PathInside -Path $target -Parent $ReleasesDir)) {
-            throw "Refusing FarPilot junction outside managed releases: $Path -> $target"
-        }
+        Assert-ManagedReleaseTarget -Target $target -ReleasesDir $ReleasesDir -AliasPath $Path
         return [PSCustomObject]@{ Kind = 'Junction'; Target = $target; Backup = $null }
     }
     if (-not $item.PSIsContainer) { throw "Refusing to replace file at managed junction path: $Path" }
@@ -353,6 +379,20 @@ function Get-ManagedFarPilotProcessState {
         return @(Read-TestState -Name 'processes' -DefaultValue @())
     }
     return @(Get-CimInstance Win32_Process -Filter "Name = 'farpilot.exe'" -ErrorAction SilentlyContinue)
+}
+
+function Test-JunctionReleaseReference {
+    param([string]$Path, [string]$ReleaseDir)
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    try {
+        $item = Get-Item -LiteralPath $Path -Force
+        if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.LinkType -ne 'Junction') {
+            return $true
+        }
+        return (Get-JunctionTarget $Path) -ieq (Get-CanonicalPath $ReleaseDir)
+    } catch {
+        return $true
+    }
 }
 
 function Invoke-ManagedFarPilotProcessStop {
@@ -762,7 +802,13 @@ try {
             try { Restore-ManagedJunction -Path $CurrentDir -State $currentState } catch { $rollbackErrors += "current junction: $($_.Exception.Message)" }
         }
         if ($releaseCreated -and $rollbackErrors.Count -eq 0 -and (Test-RegularDirectory $ReleaseDir)) {
-            try { Remove-Item -LiteralPath $ReleaseDir -Recurse -Force } catch { $rollbackErrors += "new release cleanup: $($_.Exception.Message)" }
+            $releaseReferenced = (Test-JunctionReleaseReference -Path $CurrentDir -ReleaseDir $ReleaseDir) -or
+                (Test-JunctionReleaseReference -Path $BinDir -ReleaseDir $ReleaseDir)
+            if ($releaseReferenced) {
+                $rollbackErrors += 'new release cleanup refused because a managed alias still references it'
+            } else {
+                try { Remove-Item -LiteralPath $ReleaseDir -Recurse -Force } catch { $rollbackErrors += "new release cleanup: $($_.Exception.Message)" }
+            }
         }
         if ($rollbackErrors.Count -ne 0) {
             throw "FarPilot activation failed: $($activationError.Exception.Message). Rollback also failed: $($rollbackErrors -join '; ')"
