@@ -745,7 +745,7 @@ case ":$PATH:" in
     *":$install_dir:"*) ;;
     *)
         warn "$install_dir is not in your PATH"
-        printf '    export PATH="%s:%s"\n' "$install_dir" '$PATH'
+        printf '    export PATH="%s:%s"\n' "$install_dir" "\$PATH"
         ;;
 esac
 log "ready. run 'farpilot --version'"
