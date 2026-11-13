@@ -653,6 +653,9 @@ require_https manifest "$MANIFEST_URL"
 
 need curl
 need awk
+if [ "$role" = gateway ]; then
+    need bash
+fi
 select_hash_tool
 
 TMP=$(mktemp -d)
@@ -695,9 +698,9 @@ if [ "$role" = gateway ]; then
     actual_gateway_sha256=$(hash_file "$gateway_script")
     [ "$actual_gateway_sha256" = "$gateway_sha256" ] || die "Gateway installer checksum did not match"
     if [ -n "$gateway_pre_version" ] && [ "$gateway_has_version" -eq 0 ]; then
-        sh "$gateway_script" --manifest "$manifest_path" "$@" --version "v$requested_version"
+        bash "$gateway_script" --manifest "$manifest_path" "$@" --version "v$requested_version"
     else
-        sh "$gateway_script" --manifest "$manifest_path" "$@"
+        bash "$gateway_script" --manifest "$manifest_path" "$@"
     fi
     exit $?
 fi

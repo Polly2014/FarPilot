@@ -107,14 +107,18 @@ EOF
 chmod +x "$tmp/old-version.sh"
 
 cat > "$tmp/gateway-installer.sh" <<'EOF'
-#!/bin/sh
-set -eu
-[ -n "${FARPILOT_TEST_GATEWAY_LOG:-}" ] || exit 91
-[ "${1:-}" = "--manifest" ] || exit 92
-if [ ! -f "${2:-}" ] || [ -L "${2:-}" ]; then
+#!/usr/bin/env bash
+set -euo pipefail
+if shopt -oq posix; then
+    exit 94
+fi
+args=("$@")
+[[ -n "${FARPILOT_TEST_GATEWAY_LOG:-}" ]] || exit 91
+[[ "${args[0]:-}" == "--manifest" ]] || exit 92
+if [[ ! -f "${args[1]:-}" || -L "${args[1]:-}" ]]; then
     exit 93
 fi
-printf '%s\n' "$@" > "$FARPILOT_TEST_GATEWAY_LOG"
+printf '%s\n' "${args[@]}" > "$FARPILOT_TEST_GATEWAY_LOG"
 EOF
 chmod +x "$tmp/gateway-installer.sh"
 gateway_sha=$(hash_file "$tmp/gateway-installer.sh")
@@ -181,6 +185,7 @@ run_install() {
     manifest_url=$4
     shift 4
     case_install_dir=${FARPILOT_TEST_INSTALL_DIR:-$CASE/home/install-bin}
+    test_path=${FARPILOT_TEST_PATH:-$CASE/bin:/usr/bin:/bin}
     set +e
     if [ "$manifest_url" = DEFAULT ]; then
         env \
@@ -191,7 +196,7 @@ run_install() {
             FARPILOT_UNAME_O="$uname_o" \
             FARPILOT_INSTALL_DIR="$case_install_dir" \
             HOME="$CASE/home" \
-            PATH="$CASE/bin:/usr/bin:/bin" \
+            PATH="$test_path" \
             sh "$root/install.sh" "$@" >"$CASE/stdout" 2>"$CASE/stderr"
     else
         env \
@@ -203,7 +208,7 @@ run_install() {
             FARPILOT_MANIFEST_URL="$manifest_url" \
             FARPILOT_INSTALL_DIR="$case_install_dir" \
             HOME="$CASE/home" \
-            PATH="$CASE/bin:/usr/bin:/bin" \
+            PATH="$test_path" \
             sh "$root/install.sh" "$@" >"$CASE/stdout" 2>"$CASE/stderr"
     fi
     STATUS=$?
@@ -780,7 +785,24 @@ assert_contains "$CASE/stderr" 'another FarPilot installation is active'
 rm -rf "$CASE/home/install-bin/farpilot.install.lock"
 assert_no_managed_artifacts "$CASE/home/install-bin"
 
-# Gateway mode downloads a verified installer and forwards the selected manifest plus arguments.
+# Gateway mode requires Bash before fetching or executing the Gateway installer.
+new_case gateway-missing-bash
+write_manifest "$CASE/downloads/latest.json" 9.8.7 v9.8.7 "$good_sha"
+mkdir -p "$CASE/no-bash-bin"
+cp "$root/tests/fixtures/install/fake-curl.sh" "$CASE/no-bash-bin/curl"
+chmod +x "$CASE/no-bash-bin/curl"
+ln -s /bin/sh "$CASE/no-bash-bin/sh"
+ln -s /usr/bin/awk "$CASE/no-bash-bin/awk"
+FARPILOT_TEST_PATH="$CASE/no-bash-bin"
+export FARPILOT_TEST_GATEWAY_LOG="$CASE/gateway.log"
+run_install Linux x86_64 GNU https://downloads.example/latest.json gateway --domain gateway.example.com
+unset FARPILOT_TEST_PATH FARPILOT_TEST_GATEWAY_LOG
+assert_failure
+assert_contains "$CASE/stderr" "requires 'bash'"
+assert_not_contains "$CASE/curl.log" 'install-gateway.sh'
+assert_absent "$CASE/gateway.log"
+
+# Gateway mode downloads a verified Bash installer and forwards the selected manifest plus arguments.
 new_case gateway-dispatch
 write_manifest "$CASE/downloads/latest.json" 9.8.7 v9.8.7 "$good_sha"
 export FARPILOT_TEST_GATEWAY_LOG="$CASE/gateway.log"
