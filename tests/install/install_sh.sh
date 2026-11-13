@@ -57,6 +57,21 @@ hash_file() {
     fi
 }
 
+inode_of() {
+    if stat -f '%i' "$1" >/dev/null 2>&1; then
+        stat -f '%i' "$1"
+    else
+        stat -c '%i' "$1"
+    fi
+}
+
+assert_no_managed_artifacts() {
+    directory=$1
+    [ -d "$directory" ] || return 0
+    artifacts=$(find "$directory" -maxdepth 1 \( -name 'farpilot.staged.*' -o -name 'farpilot.backup.*' -o -name 'farpilot.install.lock' \) -print)
+    [ -z "$artifacts" ] || fail "managed artifacts remain: $artifacts"
+}
+
 mkdir -p "$tmp/shared-downloads"
 for name in \
     farpilot-macos-aarch64 \
@@ -78,6 +93,27 @@ fi
 exit 0
 EOF
 chmod +x "$tmp/bad-version.sh"
+
+cat > "$tmp/old-version.sh" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "--version" ]; then
+    printf '%s\n' 'farpilot 9.8.6'
+    exit 0
+fi
+exit 0
+EOF
+chmod +x "$tmp/old-version.sh"
+
+cat > "$tmp/gateway-installer.sh" <<'EOF'
+#!/bin/sh
+set -eu
+[ -n "${FARPILOT_TEST_GATEWAY_LOG:-}" ] || exit 91
+[ "${1:-}" = "--manifest" ] || exit 92
+[ -f "${2:-}" ] && [ ! -L "${2:-}" ] || exit 93
+printf '%s\n' "$@" > "$FARPILOT_TEST_GATEWAY_LOG"
+EOF
+chmod +x "$tmp/gateway-installer.sh"
+gateway_sha=$(hash_file "$tmp/gateway-installer.sh")
 
 write_manifest() {
     destination=$1
@@ -111,7 +147,7 @@ write_manifest() {
   },
   "installers": {
     "gateway": {
-      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sha256": "$gateway_sha",
       "url": "https://downloads.example/install-gateway.sh"
     }
   },
@@ -130,6 +166,7 @@ new_case() {
     cp "$root/tests/fixtures/install/fake-curl.sh" "$CASE/bin/curl"
     chmod +x "$CASE/bin/curl"
     cp "$tmp/shared-downloads"/farpilot-* "$CASE/downloads/"
+    cp "$tmp/gateway-installer.sh" "$CASE/downloads/install-gateway.sh"
     : > "$CASE/curl.log"
 }
 
@@ -302,12 +339,6 @@ new_case invalid-version
 run_install Darwin arm64 '' DEFAULT --version release/latest
 assert_failure
 assert_contains "$CASE/stderr" 'version must use X.Y.Z'
-
-# Task 2 parses the Gateway role but does not dispatch until Task 3.
-new_case gateway-role
-run_install Linux x86_64 '' DEFAULT gateway --domain gateway.example.com
-assert_failure
-assert_contains "$CASE/stderr" 'gateway installation is not available yet'
 
 # The fake downloader itself rejects symlink fixtures and encoded separators.
 new_case symlink-fixture
@@ -549,5 +580,348 @@ run_install Darwin arm64 '' https://downloads.example/latest.json
 assert_status 0
 assert_contains "$CASE/curl.log" 'https://downloads.example/farpilot-macos-aarch64'
 assert_not_contains "$CASE/curl.log" 'https://downloads.example/shadow-binary'
+
+# Existing installations upgrade atomically and leave no managed artifacts.
+new_case atomic-upgrade
+write_manifest "$CASE/downloads/latest.json" 9.8.7 v9.8.7 "$good_sha"
+mkdir -p "$CASE/home/install-bin"
+cp "$tmp/old-version.sh" "$CASE/home/install-bin/farpilot"
+chmod +x "$CASE/home/install-bin/farpilot"
+old_inode=$(inode_of "$CASE/home/install-bin/farpilot")
+run_install Darwin arm64 '' https://downloads.example/latest.json
+assert_status 0
+[ "$("$CASE/home/install-bin/farpilot" --version)" = 'farpilot 9.8.7' ] || fail "upgrade did not activate new version"
+[ "$(inode_of "$CASE/home/install-bin/farpilot")" != "$old_inode" ] || fail "upgrade did not replace inode"
+assert_no_managed_artifacts "$CASE/home/install-bin"
+
+# Reinstalling the current exact version is idempotent and preserves the inode.
+new_case current-version-idempotent
+write_manifest "$CASE/downloads/latest.json" 9.8.7 v9.8.7 "$good_sha"
+mkdir -p "$CASE/home/install-bin"
+cp "$tmp/shared-downloads/farpilot-macos-aarch64" "$CASE/home/install-bin/farpilot"
+chmod +x "$CASE/home/install-bin/farpilot"
+current_inode=$(inode_of "$CASE/home/install-bin/farpilot")
+current_hash=$(hash_file "$CASE/home/install-bin/farpilot")
+run_install Darwin arm64 '' https://downloads.example/latest.json
+assert_status 0
+[ "$(inode_of "$CASE/home/install-bin/farpilot")" = "$current_inode" ] || fail "same-version install replaced inode"
+[ "$(hash_file "$CASE/home/install-bin/farpilot")" = "$current_hash" ] || fail "same-version install changed bytes"
+assert_no_managed_artifacts "$CASE/home/install-bin"
+
+# Download verification failures preserve an existing installation exactly.
+for preserve_case in preserve-checksum preserve-version; do
+    new_case "$preserve_case"
+    mkdir -p "$CASE/home/install-bin"
+    cp "$tmp/old-version.sh" "$CASE/home/install-bin/farpilot"
+    chmod +x "$CASE/home/install-bin/farpilot"
+    preserved_inode=$(inode_of "$CASE/home/install-bin/farpilot")
+    preserved_hash=$(hash_file "$CASE/home/install-bin/farpilot")
+    if [ "$preserve_case" = preserve-checksum ]; then
+        write_manifest "$CASE/downloads/latest.json" 9.8.7 v9.8.7 0000000000000000000000000000000000000000000000000000000000000000
+    else
+        cp "$tmp/bad-version.sh" "$CASE/downloads/farpilot-macos-aarch64"
+        preserve_bad_sha=$(hash_file "$CASE/downloads/farpilot-macos-aarch64")
+        write_manifest "$CASE/downloads/latest.json" 9.8.7 v9.8.7 "$preserve_bad_sha"
+    fi
+    run_install Darwin arm64 '' https://downloads.example/latest.json
+    assert_failure
+    [ "$(inode_of "$CASE/home/install-bin/farpilot")" = "$preserved_inode" ] || fail "$preserve_case changed inode"
+    [ "$(hash_file "$CASE/home/install-bin/farpilot")" = "$preserved_hash" ] || fail "$preserve_case changed bytes"
+    assert_no_managed_artifacts "$CASE/home/install-bin"
+done
+
+# A post-activation verification failure restores the exact old binary.
+new_case activation-rollback
+write_manifest "$CASE/downloads/latest.json" 9.8.7 v9.8.7 "$good_sha"
+mkdir -p "$CASE/home/install-bin"
+cp "$tmp/old-version.sh" "$CASE/home/install-bin/farpilot"
+chmod +x "$CASE/home/install-bin/farpilot"
+rollback_hash=$(hash_file "$CASE/home/install-bin/farpilot")
+cat > "$CASE/bin/mv" <<'EOF'
+#!/bin/sh
+set -eu
+source_path=$1
+destination=$2
+/bin/mv "$source_path" "$destination"
+case "$source_path:$destination:${FARPILOT_TEST_CORRUPT_ACTIVATED:-0}" in
+    *.staged.*:*/farpilot:1)
+        printf '%s\n' '#!/bin/sh' 'exit 47' > "$destination"
+        chmod +x "$destination"
+        ;;
+esac
+EOF
+chmod +x "$CASE/bin/mv"
+export FARPILOT_TEST_CORRUPT_ACTIVATED=1
+run_install Darwin arm64 '' https://downloads.example/latest.json
+unset FARPILOT_TEST_CORRUPT_ACTIVATED
+assert_failure
+[ "$(hash_file "$CASE/home/install-bin/farpilot")" = "$rollback_hash" ] || fail "activation failure did not restore old binary"
+assert_no_managed_artifacts "$CASE/home/install-bin"
+
+# Unsafe existing target types are refused and preserved.
+for target_kind in symlink directory fifo; do
+    new_case "unsafe-target-$target_kind"
+    write_manifest "$CASE/downloads/latest.json" 9.8.7 v9.8.7 "$good_sha"
+    mkdir -p "$CASE/home/install-bin"
+    case "$target_kind" in
+        symlink) ln -s "$tmp/old-version.sh" "$CASE/home/install-bin/farpilot" ;;
+        directory) mkdir "$CASE/home/install-bin/farpilot" ;;
+        fifo) mkfifo "$CASE/home/install-bin/farpilot" ;;
+    esac
+    run_install Darwin arm64 '' https://downloads.example/latest.json
+    assert_failure
+    case "$target_kind" in
+        symlink) [ -L "$CASE/home/install-bin/farpilot" ] || fail "symlink target was replaced" ;;
+        directory) [ -d "$CASE/home/install-bin/farpilot" ] || fail "directory target was replaced" ;;
+        fifo) [ -p "$CASE/home/install-bin/farpilot" ] || fail "FIFO target was replaced" ;;
+    esac
+    assert_no_managed_artifacts "$CASE/home/install-bin"
+done
+
+# Dry run fetches metadata only and reports the complete plan without mutation.
+new_case dry-run-cli
+write_manifest "$CASE/downloads/latest.json" 9.8.7 v9.8.7 "$good_sha"
+run_install Darwin arm64 '' https://downloads.example/latest.json --dry-run
+assert_status 0
+assert_contains "$CASE/stdout" 'role: cli'
+assert_contains "$CASE/stdout" 'target: macos-aarch64'
+assert_contains "$CASE/stdout" 'manifest: https://downloads.example/latest.json'
+assert_contains "$CASE/stdout" 'version: 9.8.7'
+assert_contains "$CASE/stdout" 'asset: https://downloads.example/farpilot-macos-aarch64'
+assert_contains "$CASE/stdout" "destination: $CASE/home/install-bin/farpilot"
+assert_absent "$CASE/home/install-bin"
+assert_not_contains "$CASE/curl.log" 'farpilot-macos-aarch64'
+assert_absent "$CASE/gateway.log"
+
+# A held activation lock fails in bounded time and is never stolen.
+new_case held-lock
+write_manifest "$CASE/downloads/latest.json" 9.8.7 v9.8.7 "$good_sha"
+mkdir -p "$CASE/home/install-bin/farpilot.install.lock"
+cp "$tmp/old-version.sh" "$CASE/home/install-bin/farpilot"
+chmod +x "$CASE/home/install-bin/farpilot"
+locked_hash=$(hash_file "$CASE/home/install-bin/farpilot")
+export FARPILOT_LOCK_RETRIES=1 FARPILOT_LOCK_DELAY=0
+run_install Darwin arm64 '' https://downloads.example/latest.json
+unset FARPILOT_LOCK_RETRIES FARPILOT_LOCK_DELAY
+assert_failure
+assert_contains "$CASE/stderr" 'another FarPilot installation is active'
+[ -d "$CASE/home/install-bin/farpilot.install.lock" ] || fail "installer stole unknown lock"
+[ "$(hash_file "$CASE/home/install-bin/farpilot")" = "$locked_hash" ] || fail "held lock changed target"
+rm -rf "$CASE/home/install-bin/farpilot.install.lock"
+assert_no_managed_artifacts "$CASE/home/install-bin"
+
+# Gateway mode downloads a verified installer and forwards the selected manifest plus arguments.
+new_case gateway-dispatch
+write_manifest "$CASE/downloads/latest.json" 9.8.7 v9.8.7 "$good_sha"
+export FARPILOT_TEST_GATEWAY_LOG="$CASE/gateway.log"
+run_install Linux x86_64 '' https://downloads.example/latest.json gateway --domain gateway.example.com --email operator@example.com --version v9.8.7
+unset FARPILOT_TEST_GATEWAY_LOG
+assert_status 0
+assert_contains "$CASE/curl.log" 'https://downloads.example/install-gateway.sh'
+assert_contains "$CASE/gateway.log" '--manifest'
+assert_contains "$CASE/gateway.log" '--domain'
+assert_contains "$CASE/gateway.log" 'gateway.example.com'
+assert_contains "$CASE/gateway.log" '--email'
+assert_contains "$CASE/gateway.log" 'operator@example.com'
+assert_contains "$CASE/gateway.log" '--version'
+assert_contains "$CASE/gateway.log" 'v9.8.7'
+
+# Global version/dry-run options before gateway are normalized and never download the installer in dry run.
+new_case gateway-dry-run
+write_manifest "$CASE/downloads/manifest.json" 9.8.7 v9.8.7 "$good_sha"
+run_install Linux x86_64 '' DEFAULT --version 9.8.7 --dry-run gateway --domain gateway.example.com
+assert_status 0
+assert_contains "$CASE/stdout" 'role: gateway'
+assert_contains "$CASE/stdout" 'version: 9.8.7'
+assert_contains "$CASE/stdout" 'installer: https://downloads.example/install-gateway.sh'
+assert_not_contains "$CASE/curl.log" 'install-gateway.sh'
+assert_absent "$CASE/gateway.log"
+
+# Gateway checksum mismatch never executes the downloaded script.
+new_case gateway-checksum-mismatch
+write_manifest "$CASE/downloads/latest.json" 9.8.7 v9.8.7 "$good_sha"
+sed "s/$gateway_sha/0000000000000000000000000000000000000000000000000000000000000000/" "$CASE/downloads/latest.json" > "$CASE/downloads/manifest.bad"
+mv "$CASE/downloads/manifest.bad" "$CASE/downloads/latest.json"
+export FARPILOT_TEST_GATEWAY_LOG="$CASE/gateway.log"
+run_install Linux x86_64 '' https://downloads.example/latest.json gateway --domain gateway.example.com
+unset FARPILOT_TEST_GATEWAY_LOG
+assert_failure
+assert_contains "$CASE/stderr" 'Gateway installer checksum did not match'
+assert_absent "$CASE/gateway.log"
+
+# Gateway parser ignores shadows and rejects duplicate gateway records/fields.
+new_case gateway-shadow
+cat > "$CASE/downloads/latest.json" <<EOF
+{
+  "shadow": {
+    "gateway": {
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "url": "https://downloads.example/shadow-gateway.sh"
+    }
+  },
+  "assets": {},
+  "installers": {
+    "gateway": {
+      "sha256": "$gateway_sha",
+      "url": "https://downloads.example/install-gateway.sh"
+    }
+  },
+  "schema_version": 1,
+  "tag": "v9.8.7",
+  "version": "9.8.7"
+}
+EOF
+export FARPILOT_TEST_GATEWAY_LOG="$CASE/gateway.log"
+run_install Linux x86_64 '' https://downloads.example/latest.json gateway --domain gateway.example.com
+unset FARPILOT_TEST_GATEWAY_LOG
+assert_status 0
+assert_not_contains "$CASE/curl.log" 'shadow-gateway.sh'
+
+for gateway_duplicate in installers gateway url sha256; do
+    new_case "gateway-duplicate-$gateway_duplicate"
+    case "$gateway_duplicate" in
+        installers)
+            cat > "$CASE/downloads/latest.json" <<EOF
+{
+  "assets": {},
+  "installers": {
+    "gateway": {
+      "sha256": "$gateway_sha",
+      "url": "https://downloads.example/install-gateway.sh"
+    }
+  },
+  "installers": {
+    "gateway": {
+      "sha256": "$gateway_sha",
+      "url": "https://downloads.example/install-gateway.sh"
+    }
+  },
+  "schema_version": 1,
+  "tag": "v9.8.7",
+  "version": "9.8.7"
+}
+EOF
+            expected_gateway_error='duplicate top-level key: installers'
+            ;;
+        gateway)
+            cat > "$CASE/downloads/latest.json" <<EOF
+{
+  "assets": {},
+  "installers": {
+    "gateway": {
+      "sha256": "$gateway_sha",
+      "url": "https://downloads.example/install-gateway.sh"
+    },
+    "gateway": {
+      "sha256": "$gateway_sha",
+      "url": "https://downloads.example/install-gateway.sh"
+    }
+  },
+  "schema_version": 1,
+  "tag": "v9.8.7",
+  "version": "9.8.7"
+}
+EOF
+            expected_gateway_error='duplicate installer key: gateway'
+            ;;
+        url|sha256)
+            duplicate_gateway_line='      "url": "https://downloads.example/install-gateway.sh"'
+            [ "$gateway_duplicate" = sha256 ] && duplicate_gateway_line="      \"sha256\": \"$gateway_sha\""
+            cat > "$CASE/downloads/latest.json" <<EOF
+{
+  "assets": {},
+  "installers": {
+    "gateway": {
+      "sha256": "$gateway_sha",
+      "url": "https://downloads.example/install-gateway.sh",
+$duplicate_gateway_line
+    }
+  },
+  "schema_version": 1,
+  "tag": "v9.8.7",
+  "version": "9.8.7"
+}
+EOF
+            expected_gateway_error="duplicate gateway installer field: $gateway_duplicate"
+            ;;
+    esac
+    run_install Linux x86_64 '' https://downloads.example/latest.json gateway --domain gateway.example.com
+    assert_failure
+    assert_contains "$CASE/stderr" "$expected_gateway_error"
+done
+
+new_case gateway-malformed-nesting
+cat > "$CASE/downloads/latest.json" <<EOF
+{
+  "assets": {},
+  "installers": {
+  "gateway": {
+      "sha256": "$gateway_sha",
+      "url": "https://downloads.example/install-gateway.sh"
+    }
+  },
+  "schema_version": 1,
+  "tag": "v9.8.7",
+  "version": "9.8.7"
+}
+EOF
+run_install Linux x86_64 '' https://downloads.example/latest.json gateway --domain gateway.example.com
+assert_failure
+assert_contains "$CASE/stderr" 'malformed object nesting'
+
+# A signal after backup creation restores the old target and cleans owned artifacts.
+new_case signal-rollback
+write_manifest "$CASE/downloads/latest.json" 9.8.7 v9.8.7 "$good_sha"
+mkdir -p "$CASE/home/install-bin"
+cp "$tmp/old-version.sh" "$CASE/home/install-bin/farpilot"
+chmod +x "$CASE/home/install-bin/farpilot"
+signal_hash=$(hash_file "$CASE/home/install-bin/farpilot")
+cat > "$CASE/bin/mv" <<'EOF'
+#!/bin/sh
+set -eu
+source_path=$1
+destination=$2
+/bin/mv "$source_path" "$destination"
+case "$destination:${FARPILOT_TEST_SIGNAL_READY:-}" in
+    *.backup.*:*)
+        : > "$FARPILOT_TEST_SIGNAL_READY"
+        sleep 30
+        ;;
+esac
+EOF
+chmod +x "$CASE/bin/mv"
+signal_ready=$CASE/signal.ready
+set +e
+env \
+    FARPILOT_TEST_DOWNLOADS="$CASE/downloads" \
+    FARPILOT_TEST_CURL_LOG="$CASE/curl.log" \
+    FARPILOT_TEST_SIGNAL_READY="$signal_ready" \
+    FARPILOT_UNAME_S=Darwin \
+    FARPILOT_UNAME_M=arm64 \
+    FARPILOT_UNAME_O= \
+    FARPILOT_MANIFEST_URL=https://downloads.example/latest.json \
+    FARPILOT_INSTALL_DIR="$CASE/home/install-bin" \
+    HOME="$CASE/home" \
+    PATH="$CASE/bin:/usr/bin:/bin" \
+    sh "$root/install.sh" >"$CASE/stdout" 2>"$CASE/stderr" &
+signal_pid=$!
+signal_wait=0
+while [ ! -f "$signal_ready" ] && [ "$signal_wait" -lt 100 ]; do
+    sleep 0.05
+    signal_wait=$((signal_wait + 1))
+done
+if [ ! -f "$signal_ready" ]; then
+    kill "$signal_pid" 2>/dev/null || true
+    wait "$signal_pid" 2>/dev/null || true
+    set -e
+    fail "signal test never reached backup point"
+fi
+kill -TERM "$signal_pid"
+wait "$signal_pid"
+signal_status=$?
+set -e
+[ "$signal_status" -ne 0 ] || fail "signalled installer unexpectedly succeeded"
+[ "$(hash_file "$CASE/home/install-bin/farpilot")" = "$signal_hash" ] || fail "signal did not restore old binary"
+assert_no_managed_artifacts "$CASE/home/install-bin"
 
 printf '%s\n' 'POSIX installer tests passed'
