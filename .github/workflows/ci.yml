@@ -23,10 +23,26 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Run documentation tests
+        run: cargo test --doc --workspace
+      - name: Test release tooling
+        run: python3 -m unittest discover -s tests/release -p 'test_*.py' -v
+      - name: Verify release workflow structure
+        run: bash tests/release/workflow_assets.sh
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Lint shell installers
+        run: |
+          shellcheck install.sh deploy/gateway/install.sh \
+            tests/install/install_sh.sh tests/install/gateway_installer.sh \
+            tests/release/workflow_assets.sh
 
   ssh-security:
     name: OpenSSH restriction integration
@@ -57,6 +73,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run workspace tests
         run: cargo test --workspace --all-targets
+      - name: Test POSIX installer
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash tests/install/install_sh.sh
+      - name: Test Gateway installer
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tests/install/gateway_installer.sh
       - name: Build Windows Stage 0 binary
         if: runner.os == 'Windows'
         run: cargo build --release -p farpilot-cli

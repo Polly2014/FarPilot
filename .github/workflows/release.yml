@@ -1,0 +1,306 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and verify assets without publishing
+        type: boolean
+        default: true
+      version:
+        description: Semantic version to assemble (for example 0.2.0)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  quality:
+    name: Release quality gates
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Run workspace tests
+        run: cargo test --workspace --all-targets
+      - name: Run documentation tests
+        run: cargo test --doc --workspace
+      - name: Test release manifest tools
+        run: python3 -m unittest discover -s tests/release -p 'test_*.py' -v
+      - name: Verify release workflow structure
+        run: bash tests/release/workflow_assets.sh
+      - name: Verify deployment assets
+        run: |
+          bash tests/workspace_layout.sh
+          bash tests/security/deployment_assets.sh
+          bash tests/security/sshd_restrictions.sh
+
+  ssh-security:
+    name: Release OpenSSH restriction integration
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install OpenSSH server
+        run: sudo apt-get update && sudo apt-get install -y openssh-server
+      - name: Build FarPilot as runner user
+        run: cargo build -p farpilot-cli
+      - name: Verify forced command and forwarding restrictions
+        env:
+          FARPILOT_TEST_BINARY: ${{ github.workspace }}/target/debug/farpilot
+        run: sudo --preserve-env=PATH,FARPILOT_TEST_BINARY bash tests/security/sshd_integration.sh
+
+  installers:
+    name: Installer tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+      - name: Build native FarPilot
+        run: cargo build --release -p farpilot-cli
+      - name: Test POSIX installer
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash tests/install/install_sh.sh
+      - name: Test Gateway installer
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tests/install/gateway_installer.sh
+      - name: Install ShellCheck
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Lint shell installers
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          shellcheck install.sh deploy/gateway/install.sh \
+            tests/install/install_sh.sh tests/install/gateway_installer.sh \
+            tests/release/workflow_assets.sh
+      - name: Install PSScriptAnalyzer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Install-Module PSScriptAnalyzer -RequiredVersion 1.23.0 -Scope CurrentUser -Force
+      - name: Lint Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $findings = @(
+            Invoke-ScriptAnalyzer -Path deploy/windows/install.ps1 -ExcludeRule PSUseApprovedVerbs
+            Invoke-ScriptAnalyzer -Path deploy/windows/test-install.ps1 -ExcludeRule PSUseApprovedVerbs
+          )
+          if ($findings.Count -ne 0) {
+            $findings | Format-Table -AutoSize | Out-String | Write-Host
+            throw "PSScriptAnalyzer found $($findings.Count) issue(s)"
+          }
+      - name: Test Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:FARPILOT_TEST_BINARY = (Resolve-Path target/release/farpilot.exe)
+          ./deploy/windows/test-install.ps1
+
+  build:
+    name: Build ${{ matrix.asset }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            asset: farpilot-linux-x86_64
+            binary: target/x86_64-unknown-linux-musl/release/farpilot
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            asset: farpilot-linux-aarch64
+            binary: target/aarch64-unknown-linux-musl/release/farpilot
+          - runner: macos-13
+            target: x86_64-apple-darwin
+            asset: farpilot-macos-x86_64
+            binary: target/x86_64-apple-darwin/release/farpilot
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            asset: farpilot-macos-aarch64
+            binary: target/aarch64-apple-darwin/release/farpilot
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            asset: farpilot-windows-x86_64.exe
+            binary: target/x86_64-pc-windows-msvc/release/farpilot.exe
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - name: Install Linux musl toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build release binary
+        run: cargo build --release -p farpilot-cli --target ${{ matrix.target }}
+      - name: Verify native binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ./"${{ matrix.binary }}" --version
+      - name: Verify Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '& "${{ matrix.binary }}" --version'
+      - name: Stage release binary
+        shell: bash
+        run: |
+          mkdir -p release
+          cp "${{ matrix.binary }}" "release/${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.target }}
+          path: release/${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 1
+
+  assemble:
+    name: Assemble verified release
+    needs: [quality, ssh-security, installers, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: Stage installer assets
+        run: |
+          cp install.sh release/install.sh
+          cp deploy/windows/install.ps1 release/install.ps1
+          cp deploy/gateway/install.sh release/install-gateway.sh
+          chmod 0755 release/install.sh release/install-gateway.sh
+      - name: Resolve and verify release version
+        id: version
+        env:
+          MANUAL_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            version=${GITHUB_REF_NAME#v}
+          else
+            version=$MANUAL_VERSION
+          fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "invalid release version: $version" >&2
+            exit 1
+          }
+          cargo_version=$(python3 - <<'PY'
+          import json, subprocess
+          metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"]))
+          versions = {package["version"] for package in metadata["packages"] if package["name"].startswith("farpilot-")}
+          if len(versions) != 1:
+              raise SystemExit("workspace FarPilot package versions differ")
+          print(versions.pop())
+          PY
+          )
+          [[ "$version" == "$cargo_version" ]] || {
+            echo "release version $version does not match Cargo version $cargo_version" >&2
+            exit 1
+          }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Generate release manifest
+        run: |
+          python3 scripts/release_manifest.py \
+            --version "${{ steps.version.outputs.version }}" \
+            --repository Polly2014/FarPilot \
+            --output release/manifest.json \
+            --asset linux-x86_64=release/farpilot-linux-x86_64 \
+            --asset linux-aarch64=release/farpilot-linux-aarch64 \
+            --asset macos-x86_64=release/farpilot-macos-x86_64 \
+            --asset macos-aarch64=release/farpilot-macos-aarch64 \
+            --asset windows-x86_64=release/farpilot-windows-x86_64.exe \
+            --installer gateway=release/install-gateway.sh
+          python3 scripts/validate_release_assets.py \
+            --manifest release/manifest.json \
+            --release-dir release \
+            --reported-version "${{ steps.version.outputs.version }}"
+      - name: Assert exact release asset set
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          expected = {
+              "farpilot-linux-x86_64",
+              "farpilot-linux-aarch64",
+              "farpilot-macos-x86_64",
+              "farpilot-macos-aarch64",
+              "farpilot-windows-x86_64.exe",
+              "install.sh",
+              "install.ps1",
+              "install-gateway.sh",
+              "manifest.json",
+          }
+          actual = {path.name for path in Path("release").iterdir() if path.is_file()}
+          if actual != expected:
+              raise SystemExit(f"release asset set mismatch: expected={sorted(expected)} actual={sorted(actual)}")
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-complete
+          path: release/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish stable GitHub Release
+    needs: assemble
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: release-complete
+          path: release
+      - name: Refuse an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release already exists: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "FarPilot ${GITHUB_REF_NAME#v}" \
+            --notes-from-tag
