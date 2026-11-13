@@ -23,6 +23,30 @@ Never place real IPs, tokens, private keys, or company data in this repository.
 
 Rollback: stop FarPilot, restore previous binary/config, run `sshd -t`, then restart sshd and reload Nginx. Preserve SQLite and `authorized_keys` backups with mode 0600.
 
+### Bootstrap installer endpoints
+
+Before announcing the first one-command release, deploy the reviewed Nginx site containing the exact `/install.sh`, `/install.ps1`, and `/latest.json` locations, run `nginx -t`, and reload Nginx. Do not advertise these commands until a stable GitHub Release contains all three assets.
+
+Verify the three redirects without following them:
+
+```bash
+curl -fsSI https://farpilot.polly.wang/install.sh \
+  | grep -Fi 'location: https://github.com/Polly2014/FarPilot/releases/latest/download/install.sh'
+curl -fsSI https://farpilot.polly.wang/install.ps1 \
+  | grep -Fi 'location: https://github.com/Polly2014/FarPilot/releases/latest/download/install.ps1'
+curl -fsSI https://farpilot.polly.wang/latest.json \
+  | grep -Fi 'location: https://github.com/Polly2014/FarPilot/releases/latest/download/manifest.json'
+```
+
+After the first stable Release exists, follow the manifest redirect and validate its minimum schema:
+
+```bash
+curl -fsSL https://farpilot.polly.wang/latest.json \
+  | python3 -c 'import json,sys; value=json.load(sys.stdin); assert value["schema_version"] == 1; assert value["version"]; assert value["assets"]'
+```
+
+Re-run the existing `/pair`, `/v1`, `/health`, and `/ws/host` checks after reloading Nginx; the exact installer locations must not change those routes.
+
 ## Windows DevBox
 
 1. Download the signed Windows artifact and published SHA256.

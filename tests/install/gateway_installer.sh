@@ -12,6 +12,37 @@ assert_dir() { [[ -d "$1" ]] || fail "missing directory $1"; }
 assert_contains() { grep -Fq -- "$2" "$1" || fail "$1 missing: $2"; }
 assert_not_contains() { [[ ! -e "$1" ]] || ! grep -Fq -- "$2" "$1" || fail "$1 unexpectedly contains: $2"; }
 assert_eq() { [[ "$1" == "$2" ]] || fail "expected [$2], got [$1]"; }
+assert_installer_redirects() {
+  python3 - "$1" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = re.sub(r"(?m)#.*$", "", path.read_text(encoding="utf-8"))
+expected = {
+    "/install.sh": "https://github.com/Polly2014/FarPilot/releases/latest/download/install.sh",
+    "/install.ps1": "https://github.com/Polly2014/FarPilot/releases/latest/download/install.ps1",
+    "/latest.json": "https://github.com/Polly2014/FarPilot/releases/latest/download/manifest.json",
+}
+locations = re.findall(r"location\s+([^\{]+?)\s*\{([^{}]*)\}", text, re.S)
+for route, target in expected.items():
+    exact = [(spec.strip(), body) for spec, body in locations if spec.strip() == f"= {route}"]
+    if len(exact) != 1:
+        raise SystemExit(f"{path}: expected one exact location for {route}, found {len(exact)}")
+    returns = re.findall(r"(?m)^\s*return\s+302\s+(\S+);\s*$", exact[0][1])
+    if returns != [target]:
+        raise SystemExit(f"{path}: invalid redirect for {route}: {returns}")
+allowed_specs = {f"= {route}" for route in expected}
+conflicting = []
+for spec, _ in locations:
+    normalized = spec.strip().replace("\\", "")
+    if spec.strip() not in allowed_specs and ("/install" in normalized or "/latest" in normalized):
+        conflicting.append(spec.strip())
+if conflicting:
+    raise SystemExit(f"{path}: non-exact installer locations found: {conflicting}")
+PY
+}
 mode_of() {
   if stat -c '%a' "$1" >/dev/null 2>&1; then stat -c '%a' "$1"; else stat -f '%Lp' "$1"; fi
 }
@@ -55,6 +86,31 @@ write_manifest() {
 }
 EOF
 }
+
+# The redirect parser must not accept comments or additional prefix/regex routes.
+redirect_fixture="$tmp/redirect-comment-only.nginx"
+cat > "$redirect_fixture" <<'EOF'
+# location = /install.sh { return 302 https://github.com/Polly2014/FarPilot/releases/latest/download/install.sh; }
+# location = /install.ps1 { return 302 https://github.com/Polly2014/FarPilot/releases/latest/download/install.ps1; }
+# location = /latest.json { return 302 https://github.com/Polly2014/FarPilot/releases/latest/download/manifest.json; }
+EOF
+if assert_installer_redirects "$redirect_fixture" >/dev/null 2>&1; then fail 'comment-only redirects passed'; fi
+redirect_fixture="$tmp/redirect-conflict.nginx"
+cat > "$redirect_fixture" <<'EOF'
+location = /install.sh {
+    return 302 https://github.com/Polly2014/FarPilot/releases/latest/download/install.sh;
+}
+location = /install.ps1 {
+    return 302 https://github.com/Polly2014/FarPilot/releases/latest/download/install.ps1;
+}
+location = /latest.json {
+    return 302 https://github.com/Polly2014/FarPilot/releases/latest/download/manifest.json;
+}
+location ~ ^/install {
+    return 404;
+}
+EOF
+if assert_installer_redirects "$redirect_fixture" >/dev/null 2>&1; then fail 'non-exact installer route passed'; fi
 
 new_case() {
   local name=$1
@@ -119,6 +175,7 @@ assert_contains "$ROOT/etc/ssh/sshd_config.d/90-farpilot.conf" 'AllowAgentForwar
 assert_contains "$ROOT/etc/nginx/sites-available/gateway.example.com" 'proxy_pass http://127.0.0.1:8787'
 assert_contains "$ROOT/etc/nginx/sites-available/gateway.example.com" 'access_log off;'
 assert_contains "$ROOT/etc/nginx/sites-available/gateway.example.com" 'error_log /dev/null crit;'
+assert_installer_redirects "$ROOT/etc/nginx/sites-available/gateway.example.com"
 assert_contains "$LOG" 'apt-get install nginx openssh-server certbot python3-certbot-nginx ca-certificates curl'
 assert_contains "$LOG" 'useradd --system --user-group --home /var/lib/farpilot --shell /bin/sh farpilot'
 assert_contains "$LOG" 'sshd -t'

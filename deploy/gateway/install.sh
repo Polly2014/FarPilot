@@ -466,6 +466,15 @@ ${tls_directives}
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
+    location = /install.sh {
+        return 302 https://github.com/Polly2014/FarPilot/releases/latest/download/install.sh;
+    }
+    location = /install.ps1 {
+        return 302 https://github.com/Polly2014/FarPilot/releases/latest/download/install.ps1;
+    }
+    location = /latest.json {
+        return 302 https://github.com/Polly2014/FarPilot/releases/latest/download/manifest.json;
+    }
     location / { proxy_pass http://127.0.0.1:8787; proxy_set_header Host \$host; }
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header X-Content-Type-Options "nosniff" always;

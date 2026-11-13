@@ -7,6 +7,41 @@ windows="$root/deploy/windows/install.ps1"
 runbook="$root/docs/stage0-runbook.md"
 gateway_installer="$root/deploy/gateway/install.sh"
 
+assert_installer_redirects() {
+  python3 - "$1" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = re.sub(r"(?m)#.*$", "", text)
+expected = {
+    "/install.sh": "https://github.com/Polly2014/FarPilot/releases/latest/download/install.sh",
+    "/install.ps1": "https://github.com/Polly2014/FarPilot/releases/latest/download/install.ps1",
+    "/latest.json": "https://github.com/Polly2014/FarPilot/releases/latest/download/manifest.json",
+}
+locations = re.findall(r"location\s+([^\{]+?)\s*\{([^{}]*)\}", text, re.S)
+for route, target in expected.items():
+    exact = [(spec.strip(), body) for spec, body in locations if spec.strip() == f"= {route}"]
+    if len(exact) != 1:
+        raise SystemExit(f"{path}: expected one exact location for {route}, found {len(exact)}")
+    returns = re.findall(r"(?m)^\s*return\s+302\s+(\S+);\s*$", exact[0][1])
+    if returns != [target]:
+        raise SystemExit(f"{path}: invalid redirect for {route}: {returns}")
+allowed_specs = {f"= {route}" for route in expected}
+conflicting = []
+for spec, _ in locations:
+    normalized = spec.strip().replace("\\", "")
+    if spec.strip() not in allowed_specs and ("/install" in normalized or "/latest" in normalized):
+        conflicting.append(spec.strip())
+if conflicting:
+    raise SystemExit(f"{path}: non-exact installer locations found: {conflicting}")
+PY
+}
+
+assert_installer_redirects "$nginx"
+
 grep -q '127.0.0.1:8787' "$service"
 grep -q 'NoNewPrivileges=true' "$service"
 grep -q 'PrivateTmp=true' "$service"
@@ -23,6 +58,10 @@ grep -q 'Get-FileHash -Algorithm SHA256' "$windows"
 grep -q 'Get-AuthenticodeSignature' "$windows"
 grep -q 'RunLevel Limited' "$windows"
 grep -q 'FARPILOT_DATABASE_URL=sqlite:///var/lib/farpilot/farpilot.db' "$runbook"
+grep -Fq 'Before announcing the first one-command release' "$runbook"
+grep -Fq 'curl -fsSI https://farpilot.polly.wang/install.sh' "$runbook"
+grep -Fq 'curl -fsSI https://farpilot.polly.wang/install.ps1' "$runbook"
+grep -Fq 'curl -fsSL https://farpilot.polly.wang/latest.json' "$runbook"
 grep -q 'NoNewPrivileges=true' "$gateway_installer"
 grep -q 'ProtectSystem=strict' "$gateway_installer"
 grep -q 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6' "$gateway_installer"
