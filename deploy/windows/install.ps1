@@ -10,7 +10,7 @@ param(
     [string]$LocalPackageVersion,
     [string]$LocalPackageSha256,
     [string]$TestStateDirectory,
-    [ValidateSet('', 'AfterCurrentJunction', 'AfterBinJunction', 'AfterPathUpdate', 'DuringTaskUpdate', 'DuringTaskStart')]
+    [ValidateSet('', 'DuringPathStateCapture', 'DuringManagedProcessStop', 'AfterCurrentJunction', 'AfterBinJunction', 'AfterPathUpdate', 'DuringTaskUpdate', 'DuringTaskStart', 'DuringCleanup')]
     [string]$TestFailAfter = ''
 )
 
@@ -348,26 +348,30 @@ function Restore-ManagedJunction {
     }
 }
 
-function Invoke-ManagedFarPilotProcessStop {
-    param([string]$ReleasesDir)
+function Get-ManagedFarPilotProcessState {
     if ($script:UseTestAdapters) {
-        $state = Read-TestState -Name 'processes' -DefaultValue @()
-        foreach ($process in @($state)) {
-            $path = [string]$process.ExecutablePath
-            if ([string]$process.Name -ieq 'farpilot.exe' -and -not [string]::IsNullOrWhiteSpace($path) -and
-                (Test-PathInside -Path $path -Parent $ReleasesDir)) {
+        return @(Read-TestState -Name 'processes' -DefaultValue @())
+    }
+    return @(Get-CimInstance Win32_Process -Filter "Name = 'farpilot.exe'" -ErrorAction SilentlyContinue)
+}
+
+function Invoke-ManagedFarPilotProcessStop {
+    param([object[]]$ProcessState, [string]$ReleasesDir)
+    Invoke-TestFailure -Point 'DuringManagedProcessStop'
+    foreach ($process in @($ProcessState)) {
+        $path = [string]$process.ExecutablePath
+        $name = if ($process.PSObject.Properties['Name']) { [string]$process.Name } else { 'farpilot.exe' }
+        if ($name -ieq 'farpilot.exe' -and -not [string]::IsNullOrWhiteSpace($path) -and
+            (Test-PathInside -Path $path -Parent $ReleasesDir)) {
+            if ($script:UseTestAdapters) {
                 $process.Stopped = $true
+            } else {
+                Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
             }
         }
-        Write-TestState -Name 'processes' -Value @($state)
-        return
     }
-    $processes = Get-CimInstance Win32_Process -Filter "Name = 'farpilot.exe'" -ErrorAction SilentlyContinue
-    foreach ($process in @($processes)) {
-        $path = [string]$process.ExecutablePath
-        if (-not [string]::IsNullOrWhiteSpace($path) -and (Test-PathInside -Path $path -Parent $ReleasesDir)) {
-            Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
-        }
+    if ($script:UseTestAdapters) {
+        Write-TestState -Name 'processes' -Value @($ProcessState)
     }
 }
 
@@ -504,6 +508,7 @@ public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint m
 }
 
 function Get-UserPathState {
+    Invoke-TestFailure -Point 'DuringPathStateCapture'
     if ($script:UseTestAdapters) {
         $default = [PSCustomObject]@{ Exists = $false; Value = $null; Kind = 'String'; ProcessValue = $env:Path }
         $state = Read-TestState -Name 'path' -DefaultValue $default
@@ -698,6 +703,8 @@ try {
         if ($entries.Count -ne 1 -or $entries[0].Name -ine 'farpilot.exe' -or -not (Test-RegularFile $ReleaseExe)) {
             throw "Existing FarPilot release is incomplete or unmanaged: $ReleaseDir"
         }
+        Test-FileDigest -Path $ReleaseExe -Expected $package.Sha256
+        Test-AuthenticodePolicy $ReleaseExe
         $existingVersion = Get-ExecutableVersion $ReleaseExe
         if ($existingVersion -cne $requestedVersion) { throw "Existing release has wrong version: $existingVersion" }
     } else {
@@ -706,25 +713,30 @@ try {
         Copy-Item -LiteralPath $download -Destination (Join-Path $stagingDir 'farpilot.exe')
         $stagedExe = Join-Path $stagingDir 'farpilot.exe'
         Test-FileDigest -Path $stagedExe -Expected $package.Sha256
+        Test-AuthenticodePolicy $stagedExe
         if ((Get-ExecutableVersion $stagedExe) -cne $requestedVersion) { throw 'Staged FarPilot version changed during copy' }
-        Move-Item -LiteralPath $stagingDir -Destination $ReleaseDir
     }
 
+    # Capture every non-mutating rollback input before stopping the task or processes.
     $currentState = Get-JunctionState -Path $CurrentDir -ReleasesDir $ReleasesDir -AllowLegacyBinary $false
     $binState = Get-JunctionState -Path $BinDir -ReleasesDir $ReleasesDir -AllowLegacyBinary $true
-    $pathState = $null
-    $taskStateCaptured = $false
-
     $taskState = Get-FarPilotStartupTaskState
-    $taskStateCaptured = $true
-    Invoke-FarPilotStartupTaskStop $taskState
-    Invoke-ManagedFarPilotProcessStop $ReleasesDir
     $pathState = Get-UserPathState
+    $processState = @(Get-ManagedFarPilotProcessState)
 
+    $releaseCreated = $false
+    $taskStopAttempted = $false
     $currentAttempted = $false
     $binAttempted = $false
     $pathAttempted = $false
     try {
+        $taskStopAttempted = $true
+        Invoke-FarPilotStartupTaskStop $taskState
+        Invoke-ManagedFarPilotProcessStop -ProcessState $processState -ReleasesDir $ReleasesDir
+        if (-not $releaseExists) {
+            Move-Item -LiteralPath $stagingDir -Destination $ReleaseDir
+            $releaseCreated = $true
+        }
         $currentAttempted = $true
         $currentState = Invoke-ManagedJunctionActivation -Path $CurrentDir -Target $ReleaseDir -State $currentState -Root $Root
         Invoke-TestFailure -Point 'AfterCurrentJunction'
@@ -737,7 +749,7 @@ try {
     } catch {
         $activationError = $_
         $rollbackErrors = @()
-        if ($taskStateCaptured) {
+        if ($taskStopAttempted) {
             try { Restore-FarPilotStartupTask -State $taskState } catch { $rollbackErrors += "startup task: $($_.Exception.Message)" }
         }
         if ($pathAttempted) {
@@ -749,7 +761,7 @@ try {
         if ($currentAttempted) {
             try { Restore-ManagedJunction -Path $CurrentDir -State $currentState } catch { $rollbackErrors += "current junction: $($_.Exception.Message)" }
         }
-        if (-not $releaseExists -and $rollbackErrors.Count -eq 0 -and (Test-RegularDirectory $ReleaseDir)) {
+        if ($releaseCreated -and $rollbackErrors.Count -eq 0 -and (Test-RegularDirectory $ReleaseDir)) {
             try { Remove-Item -LiteralPath $ReleaseDir -Recurse -Force } catch { $rollbackErrors += "new release cleanup: $($_.Exception.Message)" }
         }
         if ($rollbackErrors.Count -ne 0) {
@@ -758,14 +770,33 @@ try {
         throw $activationError
     }
 
+    # Activation is committed. Cleanup is best-effort and must not roll back a healthy release.
+    $cleanupErrors = @()
     foreach ($state in @($currentState, $binState)) {
         if (-not [string]::IsNullOrWhiteSpace([string]$state.Backup) -and (Test-Path -LiteralPath $state.Backup)) {
-            Remove-Item -LiteralPath $state.Backup -Recurse -Force
+            try {
+                Invoke-TestFailure -Point 'DuringCleanup'
+                $backupName = Split-Path -Leaf $state.Backup
+                if (-not (Test-PathInside -Path $state.Backup -Parent $Root) -or
+                    $backupName -notlike 'bin.legacy.*' -or -not (Test-RegularDirectory $state.Backup)) {
+                    throw "Refusing unsafe legacy backup cleanup: $($state.Backup)"
+                }
+                Remove-Item -LiteralPath $state.Backup -Recurse -Force
+            } catch {
+                $cleanupErrors += "legacy backup: $($_.Exception.Message)"
+            }
         }
     }
-    (Get-Item -LiteralPath $ReleaseDir).LastWriteTimeUtc = [DateTime]::UtcNow
-    Invoke-OldReleaseCleanup -ReleasesDir $ReleasesDir -ActiveRelease $ReleaseDir -Keep $Retain
+    try {
+        (Get-Item -LiteralPath $ReleaseDir).LastWriteTimeUtc = [DateTime]::UtcNow
+        Invoke-OldReleaseCleanup -ReleasesDir $ReleasesDir -ActiveRelease $ReleaseDir -Keep $Retain
+    } catch {
+        $cleanupErrors += "release retention: $($_.Exception.Message)"
+    }
     Write-Step "Installed FarPilot $requestedVersion to $ReleaseExe"
+    if ($cleanupErrors.Count -ne 0) {
+        Write-Warning "FarPilot installed successfully; cleanup incomplete: $($cleanupErrors -join '; ')"
+    }
     Write-Output 'FarPilot opens no inbound port and creates no firewall rule.'
 } finally {
     Remove-Item -LiteralPath $stagingDir -Recurse -Force -ErrorAction SilentlyContinue

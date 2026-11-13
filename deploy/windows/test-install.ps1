@@ -20,15 +20,16 @@ function Assert-Equal {
 }
 
 function Initialize-FarPilotFixture {
-    param([string]$Version, [string]$Destination)
+    param([string]$Version, [string]$Destination, [string]$Marker = '')
     $source = [IO.Path]::ChangeExtension($Destination, '.rs')
     $escaped = $Version.Replace('\', '\\').Replace('"', '\"')
+    $escapedMarker = $Marker.Replace('\', '\\').Replace('"', '\"')
     @"
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("--version") {
         println!("farpilot $escaped");
     } else {
-        println!("fixture $escaped");
+        println!("fixture $escaped $escapedMarker");
     }
 }
 "@ | Set-Content -LiteralPath $source -Encoding UTF8
@@ -155,6 +156,8 @@ try {
         Initialize-FarPilotFixture -Version $version -Destination $path
         $packages[$version] = $path
     }
+    $alternateSameVersion = Join-Path $fixtures 'farpilot-0.2.0-alternate.exe'
+    Initialize-FarPilotFixture -Version '0.2.0' -Destination $alternateSameVersion -Marker 'alternate-build'
 
     # Fresh install creates a versioned release and managed junctions.
     $fresh = Initialize-ScenarioRoot 'fresh'
@@ -174,6 +177,15 @@ try {
     Install-Fixture -Scenario $fresh -Package $packages['0.2.0'] -Version '0.2.0' | Out-Null
     Assert-Equal -Expected $beforeHash -Actual (Get-FileHash -Algorithm SHA256 -LiteralPath $releaseExe).Hash -Message 'same-version reinstall changed bytes'
     Assert-Equal -Expected $beforeWrite -Actual (Get-Item -LiteralPath $releaseExe).LastWriteTimeUtc -Message 'same-version reinstall replaced the executable'
+
+    # A same-version release with different verified package bytes must fail closed.
+    $beforeSameVersionHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $releaseExe).Hash
+    $beforeSameVersionCurrent = Get-JunctionTarget (Join-Path $root 'current')
+    $alternateSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $alternateSameVersion).Hash
+    $alternateResult = Invoke-InstallerProcess -LocalAppData $fresh -PackagePath $alternateSameVersion -Version '0.2.0' -Sha256 $alternateSha
+    Assert-True ($alternateResult.ExitCode -ne 0) 'different same-version package unexpectedly activated'
+    Assert-Equal -Expected $beforeSameVersionHash -Actual (Get-FileHash -Algorithm SHA256 -LiteralPath $releaseExe).Hash -Message 'same-version mismatch changed existing release bytes'
+    Assert-Equal -Expected $beforeSameVersionCurrent -Actual (Get-JunctionTarget (Join-Path $root 'current')) -Message 'same-version mismatch changed current'
 
     # Checksum mismatch and binary-version mismatch cannot move current.
     $currentBefore = Get-JunctionTarget (Join-Path $root 'current')
@@ -307,7 +319,7 @@ try {
     Assert-Equal -Expected (Join-Path $runningTask 'FarPilot\bin\farpilot.exe') -Actual ([string]$runningTaskState.Executable) -Message 'existing task was not updated'
 
     # Injected failures after each activation boundary restore all prior observable state.
-    foreach ($failurePoint in @('AfterCurrentJunction', 'AfterBinJunction', 'AfterPathUpdate', 'DuringTaskUpdate', 'DuringTaskStart')) {
+    foreach ($failurePoint in @('DuringPathStateCapture', 'DuringManagedProcessStop', 'AfterCurrentJunction', 'AfterBinJunction', 'AfterPathUpdate', 'DuringTaskUpdate', 'DuringTaskStart')) {
         $transaction = Initialize-ScenarioRoot ("transaction-" + $failurePoint)
         Install-Fixture -Scenario $transaction -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
         $transactionRoot = Join-Path $transaction 'FarPilot'
@@ -326,12 +338,35 @@ try {
         Assert-Equal -Expected $priorBin -Actual (Get-JunctionTarget (Join-Path $transactionRoot 'bin')) -Message "$failurePoint did not restore bin"
         Assert-Equal -Expected $priorPathJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $transaction) 'path.json') -Raw) -Message "$failurePoint did not restore PATH"
         Assert-Equal -Expected $priorTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $transaction) 'task.json') -Raw) -Message "$failurePoint did not restore task"
+        Assert-True ([bool](Get-TestState -LocalAppData $transaction -Name 'task').Running) "$failurePoint did not keep the prior Host task running"
         Assert-Equal -Expected 'identity-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $transactionRoot 'host-identity.json') -Raw).Trim() -Message "$failurePoint changed identity"
         Assert-Equal -Expected 'config-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $transactionRoot 'host-config.json') -Raw).Trim() -Message "$failurePoint changed config"
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $transactionRoot 'releases\0.2.1-x86_64-pc-windows-msvc'))) "$failurePoint left new release"
         $transactionArtifacts = @(Get-ChildItem -LiteralPath $transactionRoot -Force -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.(staging|backup|legacy)\.' })
         Assert-Equal -Expected 0 -Actual $transactionArtifacts.Count -Message "$failurePoint left transaction artifacts"
     }
+
+    # Cleanup failure after commit keeps the healthy new activation and exits successfully with a warning.
+    $cleanup = Initialize-ScenarioRoot 'cleanup-incomplete'
+    $cleanupRoot = Join-Path $cleanup 'FarPilot'
+    $cleanupBin = Join-Path $cleanupRoot 'bin'
+    New-Item -ItemType Directory -Force -Path $cleanupBin | Out-Null
+    Copy-Item -LiteralPath $packages['0.2.0'] -Destination (Join-Path $cleanupBin 'farpilot.exe')
+    'identity-sentinel' | Set-Content -LiteralPath (Join-Path $cleanupRoot 'host-identity.json')
+    'config-sentinel' | Set-Content -LiteralPath (Join-Path $cleanupRoot 'host-config.json')
+    $cleanupResult = Invoke-InstallerProcess -LocalAppData $cleanup -PackagePath $packages['0.2.1'] -Version '0.2.1' -Sha256 (Get-FileHash -Algorithm SHA256 $packages['0.2.1']).Hash -FailAfter 'DuringCleanup'
+    Assert-Equal -Expected 0 -Actual $cleanupResult.ExitCode -Message "cleanup failure rolled back healthy activation: $($cleanupResult.Output)"
+    Assert-True ($cleanupResult.Output -match 'installed successfully; cleanup incomplete') 'cleanup failure warning was not reported'
+    $cleanupRelease = Join-Path $cleanupRoot 'releases\0.2.1-x86_64-pc-windows-msvc'
+    Assert-Equal -Expected ([IO.Path]::GetFullPath($cleanupRelease).TrimEnd('\')) -Actual (Get-JunctionTarget (Join-Path $cleanupRoot 'current')) -Message 'cleanup failure changed current activation'
+    Assert-Equal -Expected ([IO.Path]::GetFullPath($cleanupRelease).TrimEnd('\')) -Actual (Get-JunctionTarget (Join-Path $cleanupRoot 'bin')) -Message 'cleanup failure changed bin activation'
+    $cleanupPath = Get-TestState -LocalAppData $cleanup -Name 'path'
+    $cleanupCanonicalRelease = [IO.Path]::GetFullPath($cleanupRelease).TrimEnd('\')
+    Assert-True ([string]$cleanupPath.Value -like "$cleanupCanonicalRelease*") 'cleanup failure did not commit PATH'
+    Assert-Equal -Expected 'identity-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $cleanupRoot 'host-identity.json') -Raw).Trim() -Message 'cleanup failure changed identity'
+    Assert-Equal -Expected 'config-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $cleanupRoot 'host-config.json') -Raw).Trim() -Message 'cleanup failure changed config'
+    $cleanupBackups = @(Get-ChildItem -LiteralPath $cleanupRoot -Directory -Force | Where-Object { $_.Name -like 'bin.legacy.*' })
+    Assert-Equal -Expected 1 -Actual $cleanupBackups.Count -Message 'cleanup failure did not leave the safe legacy backup for retry'
 
     # DryRun makes no FarPilot root and leaves user PATH unchanged.
     $dryRun = Initialize-ScenarioRoot 'dry-run'
@@ -347,6 +382,8 @@ try {
     Assert-True ($source -match 'function\s+Invoke-FarPilotStartupTaskUpdate') 'startup task boundary is missing'
     Assert-True ($source -match 'function\s+Restore-FarPilotStartupTask') 'startup task rollback boundary is missing'
     Assert-True ($source -match 'function\s+Restore-UserPath') 'PATH rollback boundary is missing'
+    Assert-True ($source -match 'function\s+Get-ManagedFarPilotProcessState') 'process snapshot boundary is missing'
+    Assert-True ($source -match 'Test-FileDigest\s+-Path\s+\$ReleaseExe') 'same-version release digest verification is missing'
 
     Write-Output 'FarPilot Windows installer behavior verified'
 } finally {
