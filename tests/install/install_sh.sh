@@ -176,6 +176,7 @@ run_install() {
     uname_o=$3
     manifest_url=$4
     shift 4
+    case_install_dir=${FARPILOT_TEST_INSTALL_DIR:-$CASE/home/install-bin}
     set +e
     if [ "$manifest_url" = DEFAULT ]; then
         env \
@@ -184,7 +185,7 @@ run_install() {
             FARPILOT_UNAME_S="$os" \
             FARPILOT_UNAME_M="$arch" \
             FARPILOT_UNAME_O="$uname_o" \
-            FARPILOT_INSTALL_DIR="$CASE/home/install-bin" \
+            FARPILOT_INSTALL_DIR="$case_install_dir" \
             HOME="$CASE/home" \
             PATH="$CASE/bin:/usr/bin:/bin" \
             sh "$root/install.sh" "$@" >"$CASE/stdout" 2>"$CASE/stderr"
@@ -196,7 +197,7 @@ run_install() {
             FARPILOT_UNAME_M="$arch" \
             FARPILOT_UNAME_O="$uname_o" \
             FARPILOT_MANIFEST_URL="$manifest_url" \
-            FARPILOT_INSTALL_DIR="$CASE/home/install-bin" \
+            FARPILOT_INSTALL_DIR="$case_install_dir" \
             HOME="$CASE/home" \
             PATH="$CASE/bin:/usr/bin:/bin" \
             sh "$root/install.sh" "$@" >"$CASE/stdout" 2>"$CASE/stderr"
@@ -608,6 +609,45 @@ assert_status 0
 [ "$(hash_file "$CASE/home/install-bin/farpilot")" = "$current_hash" ] || fail "same-version install changed bytes"
 assert_no_managed_artifacts "$CASE/home/install-bin"
 
+# Install directories containing spaces support install, idempotence, and rollback.
+new_case install-dir-spaces
+write_manifest "$CASE/downloads/latest.json" 9.8.7 v9.8.7 "$good_sha"
+space_install_dir="$CASE/home/FarPilot Programs/bin"
+export FARPILOT_TEST_INSTALL_DIR="$space_install_dir"
+run_install Darwin arm64 '' https://downloads.example/latest.json
+assert_status 0
+[ "$("$space_install_dir/farpilot" --version)" = 'farpilot 9.8.7' ] || fail "space-path first install failed"
+space_inode=$(inode_of "$space_install_dir/farpilot")
+space_hash=$(hash_file "$space_install_dir/farpilot")
+run_install Darwin arm64 '' https://downloads.example/latest.json
+assert_status 0
+[ "$(inode_of "$space_install_dir/farpilot")" = "$space_inode" ] || fail "space-path same-version install replaced inode"
+[ "$(hash_file "$space_install_dir/farpilot")" = "$space_hash" ] || fail "space-path same-version install changed bytes"
+printf '%s\n' '# force a verified replacement attempt' >> "$space_install_dir/farpilot"
+space_rollback_inode=$(inode_of "$space_install_dir/farpilot")
+space_rollback_hash=$(hash_file "$space_install_dir/farpilot")
+cat > "$CASE/bin/mv" <<'EOF'
+#!/bin/sh
+set -eu
+source_path=$1
+destination=$2
+/bin/mv "$source_path" "$destination"
+case "$source_path:$destination:${FARPILOT_TEST_CORRUPT_ACTIVATED:-0}" in
+    *.staged.*:*/farpilot:1)
+        printf '%s\n' '#!/bin/sh' 'exit 47' > "$destination"
+        chmod +x "$destination"
+        ;;
+esac
+EOF
+chmod +x "$CASE/bin/mv"
+export FARPILOT_TEST_CORRUPT_ACTIVATED=1
+run_install Darwin arm64 '' https://downloads.example/latest.json
+unset FARPILOT_TEST_CORRUPT_ACTIVATED FARPILOT_TEST_INSTALL_DIR
+assert_failure
+[ "$(inode_of "$space_install_dir/farpilot")" = "$space_rollback_inode" ] || fail "space-path rollback changed old inode"
+[ "$(hash_file "$space_install_dir/farpilot")" = "$space_rollback_hash" ] || fail "space-path rollback changed old bytes"
+assert_no_managed_artifacts "$space_install_dir"
+
 # Download verification failures preserve an existing installation exactly.
 for preserve_case in preserve-checksum preserve-version; do
     new_case "$preserve_case"
@@ -656,6 +696,32 @@ run_install Darwin arm64 '' https://downloads.example/latest.json
 unset FARPILOT_TEST_CORRUPT_ACTIVATED
 assert_failure
 [ "$(hash_file "$CASE/home/install-bin/farpilot")" = "$rollback_hash" ] || fail "activation failure did not restore old binary"
+assert_no_managed_artifacts "$CASE/home/install-bin"
+
+# A staged-to-target move failure preserves the staged path for cleanup and restores the old inode.
+new_case activation-move-failure
+write_manifest "$CASE/downloads/latest.json" 9.8.7 v9.8.7 "$good_sha"
+mkdir -p "$CASE/home/install-bin"
+cp "$tmp/old-version.sh" "$CASE/home/install-bin/farpilot"
+chmod +x "$CASE/home/install-bin/farpilot"
+move_failure_inode=$(inode_of "$CASE/home/install-bin/farpilot")
+move_failure_hash=$(hash_file "$CASE/home/install-bin/farpilot")
+cat > "$CASE/bin/mv" <<'EOF'
+#!/bin/sh
+set -eu
+source_path=$1
+destination=$2
+case "$source_path:$destination" in
+    *.staged.*:*/farpilot) exit 73 ;;
+esac
+exec /bin/mv "$@"
+EOF
+chmod +x "$CASE/bin/mv"
+run_install Darwin arm64 '' https://downloads.example/latest.json
+assert_failure
+assert_contains "$CASE/stderr" 'failed to activate FarPilot; previous version was restored'
+[ "$(inode_of "$CASE/home/install-bin/farpilot")" = "$move_failure_inode" ] || fail "move failure changed old inode"
+[ "$(hash_file "$CASE/home/install-bin/farpilot")" = "$move_failure_hash" ] || fail "move failure changed old bytes"
 assert_no_managed_artifacts "$CASE/home/install-bin"
 
 # Unsafe existing target types are refused and preserved.

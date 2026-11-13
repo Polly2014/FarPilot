@@ -505,7 +505,7 @@ activate_cli() {
     validate_existing_target "$activate_target"
 
     if [ -f "$activate_target" ] && [ ! -L "$activate_target" ]; then
-        existing_version=$($activate_target --version 2>/dev/null || true)
+        existing_version=$("$activate_target" --version 2>/dev/null || true)
         if [ "$existing_version" = "farpilot $activate_version" ] && [ "$(hash_file "$activate_target")" = "$asset_sha256" ]; then
             log "FarPilot $activate_version is already installed at $activate_target"
             release_lock
@@ -531,12 +531,14 @@ activate_cli() {
         BACKUP_DEST=
     fi
     if ! mv "$STAGED_DEST" "$activate_target"; then
-        STAGED_DEST=
+        if [ ! -e "$STAGED_DEST" ] && [ ! -L "$STAGED_DEST" ]; then
+            STAGED_DEST=
+        fi
         restore_backup "$activate_target" || die "activation and rollback both failed"
         die "failed to activate FarPilot; previous version was restored"
     fi
     STAGED_DEST=
-    installed_version=$($activate_target --version 2>/dev/null || true)
+    installed_version=$("$activate_target" --version 2>/dev/null || true)
     if [ "$installed_version" != "farpilot $activate_version" ]; then
         rm -f "$activate_target"
         if [ "$activation_had_backup" -eq 1 ]; then
@@ -731,7 +733,7 @@ download "$asset_url" "$staged_path" || die "failed to download FarPilot binary"
 actual_sha256=$(hash_file "$staged_path")
 [ "$actual_sha256" = "$asset_sha256" ] || die "downloaded FarPilot checksum did not match"
 chmod 755 "$staged_path"
-reported_version=$($staged_path --version 2>/dev/null || true)
+reported_version=$("$staged_path" --version 2>/dev/null || true)
 [ "$reported_version" = "farpilot $manifest_version" ] \
     || die "downloaded FarPilot reported version did not match manifest"
 
