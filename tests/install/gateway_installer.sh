@@ -120,6 +120,7 @@ assert_contains "$ROOT/etc/nginx/sites-available/gateway.example.com" 'proxy_pas
 assert_contains "$ROOT/etc/nginx/sites-available/gateway.example.com" 'access_log off;'
 assert_contains "$ROOT/etc/nginx/sites-available/gateway.example.com" 'error_log /dev/null crit;'
 assert_contains "$LOG" 'apt-get install nginx openssh-server certbot python3-certbot-nginx ca-certificates curl'
+assert_contains "$LOG" 'useradd --system --user-group --home /var/lib/farpilot --shell /bin/sh farpilot'
 assert_contains "$LOG" 'sshd -t'
 assert_contains "$LOG" 'nginx -t'
 assert_contains "$LOG" 'systemd-analyze verify'
@@ -127,8 +128,32 @@ assert_contains "$LOG" 'certbot --nginx --non-interactive --agree-tos'
 assert_contains "$LOG" 'systemctl enable farpilot-gateway.service'
 assert_contains "$LOG" 'health live https://gateway.example.com/health/live'
 assert_contains "$LOG" 'health ready https://gateway.example.com/health/ready'
+FIRST_CASE=$CASE; FIRST_ROOT=$ROOT; FIRST_DOWNLOADS=$DOWNLOADS; FIRST_LOG=$LOG
+
+# Package selection and account/group preflight are deterministic.
+new_case packages-partial
+FARPILOT_TEST_INSTALLED_PACKAGES='nginx certbot curl' run_gateway --domain gateway.example.com --email operator@example.com >/dev/null
+assert_contains "$LOG" 'apt-get install openssh-server python3-certbot-nginx ca-certificates'
+assert_not_contains "$LOG" 'mystery-package'
+new_case packages-complete
+FARPILOT_TEST_INSTALLED_PACKAGES='nginx openssh-server certbot python3-certbot-nginx ca-certificates curl' run_gateway --domain gateway.example.com --email operator@example.com >/dev/null
+assert_not_contains "$LOG" 'apt-get install'
+new_case account-valid
+FARPILOT_TEST_ACCOUNT_STATE=valid run_gateway --domain gateway.example.com --email operator@example.com >/dev/null
+assert_not_contains "$LOG" 'useradd '
+new_case account-group-only
+FARPILOT_TEST_ACCOUNT_STATE=group-only run_gateway --domain gateway.example.com --email operator@example.com >/dev/null
+assert_contains "$LOG" 'useradd --system --gid farpilot --home /var/lib/farpilot --shell /bin/sh farpilot'
+for account_state in mismatch-group mismatch-home mismatch-shell; do
+  new_case "account-$account_state"
+  if FARPILOT_TEST_ACCOUNT_STATE="$account_state" run_gateway --domain gateway.example.com --email operator@example.com >/dev/null 2>&1; then fail "$account_state succeeded"; fi
+  assert_not_contains "$LOG" 'apt-get '
+  assert_not_contains "$LOG" 'useradd '
+  [[ ! -e "$ROOT/usr/local/bin/farpilot" ]] || fail "$account_state mutated binary"
+done
 
 # Existing install preserves mutable state byte-for-byte and no longer needs domain/email.
+CASE=$FIRST_CASE; ROOT=$FIRST_ROOT; DOWNLOADS=$FIRST_DOWNLOADS; LOG=$FIRST_LOG
 printf 'database-sentinel' > "$ROOT/var/lib/farpilot/farpilot.db"
 printf 'authorized-sentinel' > "$ROOT/var/lib/farpilot/authorized_keys"
 mkdir -p "$ROOT/etc/ssh" "$ROOT/etc/letsencrypt/accounts" "$ROOT/etc/letsencrypt/live/gateway.example.com"
@@ -225,6 +250,28 @@ p=sys.argv[1]; d=json.load(open(p)); d={'schema_version':1,'version':'9.8.7','ta
 PY
 run_gateway --domain gateway.example.com --email operator@example.com >/dev/null
 
+# Unsafe enabled-site ownership fails before any managed mutation.
+new_case unsafe-enabled-link
+mkdir -p "$ROOT/etc/systemd/system" "$ROOT/etc/ssh/sshd_config.d" "$ROOT/etc/nginx/sites-available" "$ROOT/etc/nginx/sites-enabled" "$ROOT/usr/local/bin"
+printf 'service-sentinel' > "$ROOT/etc/systemd/system/farpilot-gateway.service"
+printf 'sshd-sentinel' > "$ROOT/etc/ssh/sshd_config.d/90-farpilot.conf"
+printf 'nginx-sentinel' > "$ROOT/etc/nginx/sites-available/gateway.example.com"
+printf 'binary-sentinel' > "$ROOT/usr/local/bin/farpilot"
+ln -s /tmp/unmanaged-nginx "$ROOT/etc/nginx/sites-enabled/gateway.example.com"
+service_before=$(sha256_of "$ROOT/etc/systemd/system/farpilot-gateway.service")
+sshd_before=$(sha256_of "$ROOT/etc/ssh/sshd_config.d/90-farpilot.conf")
+nginx_before=$(sha256_of "$ROOT/etc/nginx/sites-available/gateway.example.com")
+link_before=$(readlink "$ROOT/etc/nginx/sites-enabled/gateway.example.com")
+if run_gateway --domain gateway.example.com --email operator@example.com >/dev/null 2>&1; then fail 'unsafe enabled link succeeded'; fi
+assert_eq "$(sha256_of "$ROOT/etc/systemd/system/farpilot-gateway.service")" "$service_before"
+assert_eq "$(sha256_of "$ROOT/etc/ssh/sshd_config.d/90-farpilot.conf")" "$sshd_before"
+assert_eq "$(sha256_of "$ROOT/etc/nginx/sites-available/gateway.example.com")" "$nginx_before"
+assert_eq "$(readlink "$ROOT/etc/nginx/sites-enabled/gateway.example.com")" "$link_before"
+assert_eq "$(cat "$ROOT/usr/local/bin/farpilot")" binary-sentinel
+assert_not_contains "$LOG" 'apt-get '
+assert_not_contains "$LOG" 'useradd '
+assert_not_contains "$LOG" 'systemctl '
+
 # Config validation failure restores prior managed config and does not reload.
 new_case validation
 run_gateway --domain gateway.example.com --email operator@example.com >/dev/null
@@ -297,11 +344,38 @@ assert_not_contains "$LOG" 'health '
 assert_not_contains "$CASE/curl.log" 'farpilot-linux-x86_64'
 assert_contains "$CASE/dry-output" 'Dry run'
 
-# Symlink managed paths fail closed.
-new_case symlink
-mkdir -p "$ROOT/var/lib" "$CASE/outside"
-ln -s "$CASE/outside" "$ROOT/var/lib/farpilot"
-if run_gateway --domain gateway.example.com --email operator@example.com >/dev/null 2>&1; then fail 'symlink state path succeeded'; fi
-[[ -L "$ROOT/var/lib/farpilot" ]] || fail 'symlink path was replaced'
+# Symlink and nonregular managed paths fail before package/account/service mutation.
+unsafe_paths=(
+  /var/lib/farpilot
+  /run/farpilot
+  /etc/farpilot
+  /usr/local/bin/farpilot
+  /etc/systemd/system/farpilot-gateway.service
+  /etc/ssh/sshd_config.d/90-farpilot.conf
+  /etc/nginx/sites-available/gateway.example.com
+  /etc/nginx/sites-enabled/gateway.example.com
+  /etc/farpilot/gateway.env
+  /var/lib/farpilot/authorized_keys
+)
+for relative in "${unsafe_paths[@]}"; do
+  safe_name=$(printf '%s' "$relative" | tr '/.' '__')
+  new_case "unsafe-$safe_name"
+  path="$ROOT$relative"
+  mkdir -p "$(dirname "$path")" "$CASE/outside"
+  printf 'outside-sentinel' > "$CASE/outside/target"
+  ln -s "$CASE/outside/target" "$path"
+  if run_gateway --domain gateway.example.com --email operator@example.com >/dev/null 2>&1; then fail "unsafe path succeeded: $relative"; fi
+  [[ -L "$path" ]] || fail "unsafe path was replaced: $relative"
+  assert_eq "$(cat "$CASE/outside/target")" outside-sentinel
+  assert_not_contains "$LOG" 'apt-get '
+  assert_not_contains "$LOG" 'useradd '
+  assert_not_contains "$LOG" 'systemctl '
+done
+new_case unsafe-fifo
+mkdir -p "$ROOT/usr/local/bin"
+mkfifo "$ROOT/usr/local/bin/farpilot"
+if run_gateway --domain gateway.example.com --email operator@example.com >/dev/null 2>&1; then fail 'FIFO binary path succeeded'; fi
+[[ -p "$ROOT/usr/local/bin/farpilot" ]] || fail 'FIFO binary path was replaced'
+assert_not_contains "$LOG" 'apt-get '
 
 printf 'gateway installer tests passed\n'

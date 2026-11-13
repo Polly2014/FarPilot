@@ -16,11 +16,13 @@ ROLLBACK_PHASE=0
 LOCK_DIR=
 LOCK_ACQUIRED=0
 STAGED_BINARY=
+CONFIG_TRANSACTION_ACTIVE=0
 
 log() { printf '  > %s\n' "$*"; }
 warn() { printf '  ! %s\n' "$*" >&2; }
 die() { printf '  x %s\n' "$*" >&2; exit 1; }
 cleanup() {
+  if ((CONFIG_TRANSACTION_ACTIVE)) && declare -F restore_configs >/dev/null 2>&1; then restore_configs >/dev/null 2>&1 || true; fi
   if [[ -n "$STAGED_BINARY" && -f "$STAGED_BINARY" && ! -L "$STAGED_BINARY" ]]; then rm -f -- "$STAGED_BINARY"; fi
   if ((LOCK_ACQUIRED)) && [[ -n "$LOCK_DIR" && -d "$LOCK_DIR" && ! -L "$LOCK_DIR" ]]; then rmdir "$LOCK_DIR" 2>/dev/null || true; fi
   if [[ -n "$TMP" && -d "$TMP" && ! -L "$TMP" ]]; then rm -rf -- "$TMP"; fi
@@ -160,6 +162,7 @@ require_https binary "$binary_url"
 
 # Existing configuration is read without sourcing shell content.
 etc_dir=$(root_path /etc/farpilot)
+require_safe_dir "$etc_dir"
 env_file="$etc_dir/gateway.env"
 read_env() {
   local key=$1 count value
@@ -197,24 +200,62 @@ reported=$($downloaded --version 2>/dev/null || true)
 [[ "$reported" == "farpilot $version" ]] || die 'downloaded Gateway version did not match manifest'
 
 # Command boundaries: production invokes real tools; tests record deterministic operations.
-run_apt() {
+package_installed() {
+  local package=$1 installed
   if [[ "$TEST_MODE" == 1 ]]; then
-    record "apt-get install ${PACKAGES[*]}"
-    return
+    installed=" ${FARPILOT_TEST_INSTALLED_PACKAGES:-} "
+    [[ "$installed" == *" $package "* ]]
+  else
+    dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'
   fi
+}
+run_apt() {
   local package
   local -a missing=()
-  for package in "${PACKAGES[@]}"; do
-    if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'; then missing+=("$package"); fi
-  done
-  if ((${#missing[@]})); then
+  for package in "${PACKAGES[@]}"; do package_installed "$package" || missing+=("$package"); done
+  ((${#missing[@]})) || return 0
+  record "apt-get install ${missing[*]}"
+  if [[ "$TEST_MODE" != 1 ]]; then
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"
   fi
 }
-ensure_user() {
-  record 'useradd farpilot'
-  if [[ "$TEST_MODE" != 1 ]]; then id farpilot >/dev/null 2>&1 || useradd --system --home /var/lib/farpilot --shell /usr/sbin/nologin farpilot; fi
+ACCOUNT_CREATE_MODE=
+preflight_account() {
+  if [[ "$TEST_MODE" == 1 ]]; then
+    case ${FARPILOT_TEST_ACCOUNT_STATE:-missing} in
+      missing) ACCOUNT_CREATE_MODE=user-group ;;
+      group-only) ACCOUNT_CREATE_MODE=existing-group ;;
+      valid) ACCOUNT_CREATE_MODE= ;;
+      mismatch-group|mismatch-home|mismatch-shell) die 'existing farpilot account/group is incompatible' ;;
+      *) die 'invalid test account state' ;;
+    esac
+    return
+  fi
+  local group_exists=0
+  getent group farpilot >/dev/null 2>&1 && group_exists=1
+  if id farpilot >/dev/null 2>&1; then
+    ((group_exists)) || die 'existing farpilot user has no same-name group'
+    [[ $(id -gn farpilot) == farpilot ]] || die 'existing farpilot user primary group is incompatible'
+    passwd_entry=$(getent passwd farpilot)
+    [[ $(printf '%s' "$passwd_entry" | cut -d: -f6) == /var/lib/farpilot ]] || die 'existing farpilot user home is incompatible'
+    [[ $(printf '%s' "$passwd_entry" | cut -d: -f7) == /bin/sh ]] || die 'existing farpilot user shell is incompatible'
+    ACCOUNT_CREATE_MODE=
+  elif ((group_exists)); then
+    ACCOUNT_CREATE_MODE=existing-group
+  else
+    ACCOUNT_CREATE_MODE=user-group
+  fi
+}
+apply_account() {
+  case "$ACCOUNT_CREATE_MODE" in
+    user-group)
+      record 'useradd --system --user-group --home /var/lib/farpilot --shell /bin/sh farpilot'
+      if [[ "$TEST_MODE" != 1 ]]; then useradd --system --user-group --home /var/lib/farpilot --shell /bin/sh farpilot; fi ;;
+    existing-group)
+      record 'useradd --system --gid farpilot --home /var/lib/farpilot --shell /bin/sh farpilot'
+      if [[ "$TEST_MODE" != 1 ]]; then useradd --system --gid farpilot --home /var/lib/farpilot --shell /bin/sh farpilot; fi ;;
+  esac
 }
 validate_configs() {
   record 'sshd -t'; [[ ${FARPILOT_TEST_FAIL_SSHD:-0} != 1 ]] || return 1
@@ -261,22 +302,34 @@ health_check() {
   fi
 }
 
-run_apt
-ensure_user
 state_dir=$(root_path /var/lib/farpilot); run_dir=$(root_path /run/farpilot)
 service_file=$(root_path /etc/systemd/system/farpilot-gateway.service)
 sshd_file=$(root_path /etc/ssh/sshd_config.d/90-farpilot.conf)
 nginx_available=$(root_path "/etc/nginx/sites-available/$DOMAIN")
 nginx_enabled=$(root_path "/etc/nginx/sites-enabled/$DOMAIN")
 binary=$(root_path /usr/local/bin/farpilot)
-for dir in "$state_dir" "$run_dir" "$etc_dir" "$(dirname "$service_file")" "$(dirname "$sshd_file")" "$(dirname "$nginx_available")" "$(dirname "$nginx_enabled")" "$(dirname "$binary")"; do require_safe_dir "$dir"; mkdir -p "$dir"; done
+authorized_keys="$state_dir/authorized_keys"
+rollback="$state_dir/farpilot.rollback"
+managed_dirs=("$state_dir" "$run_dir" "$etc_dir" "$(dirname "$service_file")" "$(dirname "$sshd_file")" "$(dirname "$nginx_available")" "$(dirname "$nginx_enabled")" "$(dirname "$binary")")
+for dir in "${managed_dirs[@]}"; do require_safe_dir "$dir"; done
+for path in "$env_file" "$service_file" "$sshd_file" "$nginx_available" "$binary" "$authorized_keys" "$rollback"; do require_safe_file "$path"; done
+link_existed=0; old_link=
+if [[ -L "$nginx_enabled" ]]; then
+  link_existed=1; old_link=$(readlink "$nginx_enabled")
+  [[ "$old_link" == "/etc/nginx/sites-available/$DOMAIN" ]] || die "managed Nginx enabled link points outside its site: $nginx_enabled"
+elif [[ -e "$nginx_enabled" ]]; then
+  die "managed Nginx enabled path is unsafe: $nginx_enabled"
+fi
+preflight_account
+run_apt
+apply_account
+for dir in "${managed_dirs[@]}"; do mkdir -p "$dir"; done
 chmod 0700 "$state_dir" "$run_dir" "$etc_dir"
 if [[ "$TEST_MODE" != 1 ]]; then chown farpilot:farpilot "$state_dir" "$run_dir" "$etc_dir"; fi
 LOCK_DIR="$state_dir/install.lock"
 [[ ! -L "$LOCK_DIR" ]] || die 'Gateway install lock is unsafe'
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then die 'another Gateway installation is in progress'; fi
 LOCK_ACQUIRED=1
-for path in "$service_file" "$sshd_file" "$nginx_available" "$binary" "$state_dir/authorized_keys"; do require_safe_file "$path"; done
 if [[ ! -e "$state_dir/authorized_keys" ]]; then : > "$state_dir/authorized_keys"; fi
 chmod 0600 "$state_dir/authorized_keys"
 if [[ "$TEST_MODE" != 1 ]]; then chown farpilot:farpilot "$state_dir/authorized_keys"; fi
@@ -399,43 +452,49 @@ server {
 }
 EOF
 
-# Save managed config backups, install candidates, validate, and restore on failure.
+# Save every prior config/link before the first candidate write.
 service_existed=0; sshd_existed=0; nginx_existed=0
 if [[ -e "$service_file" ]]; then cp -p "$service_file" "$TMP/service.old"; service_existed=1; fi
 if [[ -e "$sshd_file" ]]; then cp -p "$sshd_file" "$TMP/sshd.old"; sshd_existed=1; fi
 if [[ -e "$nginx_available" ]]; then cp -p "$nginx_available" "$TMP/nginx.old"; nginx_existed=1; fi
-install -m 0644 "$TMP/service" "$service_file"
-install -m 0644 "$TMP/sshd" "$sshd_file"
-install -m 0644 "$TMP/nginx" "$nginx_available"
-link_existed=0; old_link=
-if [[ -L "$nginx_enabled" ]]; then
-  link_existed=1
-  old_link=$(readlink "$nginx_enabled")
-  [[ "$old_link" == "/etc/nginx/sites-available/$DOMAIN" ]] || die "managed Nginx enabled link points outside its site: $nginx_enabled"
-elif [[ -e "$nginx_enabled" ]]; then
-  die "managed Nginx enabled path is unsafe: $nginx_enabled"
-fi
-ln -sfn "/etc/nginx/sites-available/$DOMAIN" "$nginx_enabled"
 restore_configs() {
   if ((service_existed)); then cp -p "$TMP/service.old" "$service_file"; else rm -f "$service_file"; fi
   if ((sshd_existed)); then cp -p "$TMP/sshd.old" "$sshd_file"; else rm -f "$sshd_file"; fi
   if ((nginx_existed)); then cp -p "$TMP/nginx.old" "$nginx_available"; else rm -f "$nginx_available"; fi
   if ((link_existed)); then ln -sfn "$old_link" "$nginx_enabled"; else rm -f "$nginx_enabled"; fi
 }
-if ! validate_configs; then restore_configs; die 'Gateway configuration validation failed'
+apply_configs() {
+  install -m 0644 "$TMP/service" "$service_file" || return 1
+  install -m 0644 "$TMP/sshd" "$sshd_file" || return 1
+  install -m 0644 "$TMP/nginx" "$nginx_available" || return 1
+  ln -sfn "/etc/nginx/sites-available/$DOMAIN" "$nginx_enabled" || return 1
+}
+CONFIG_TRANSACTION_ACTIVE=1
+if ! apply_configs; then
+  restore_configs || true
+  CONFIG_TRANSACTION_ACTIVE=0
+  die 'Gateway configuration activation failed; previous configuration restored'
+fi
+if ! validate_configs; then
+  restore_configs || true
+  CONFIG_TRANSACTION_ACTIVE=0
+  die 'Gateway configuration validation failed'
 fi
 if ! reload_configs; then
-  restore_configs
+  restore_configs || true
   reload_configs >/dev/null 2>&1 || true
+  CONFIG_TRANSACTION_ACTIVE=0
   die 'Gateway configuration reload failed; previous configuration restored'
 fi
 
 cert_file=$(root_path "/etc/letsencrypt/live/$DOMAIN/fullchain.pem")
 if [[ ! -f "$cert_file" ]] && ! obtain_certificate; then
-  restore_configs
+  restore_configs || true
   reload_configs >/dev/null 2>&1 || true
+  CONFIG_TRANSACTION_ACTIVE=0
   die 'Certbot failed; previous Gateway configuration restored'
 fi
+CONFIG_TRANSACTION_ACTIVE=0
 
 old_binary=0; rollback="$state_dir/farpilot.rollback"
 require_safe_file "$rollback"
