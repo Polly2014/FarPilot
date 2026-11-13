@@ -40,8 +40,14 @@ fn main() {
     }
 }
 "@ | Set-Content -LiteralPath $source -Encoding UTF8
-    & rustc $source -O -o $Destination
-    if ($LASTEXITCODE -ne 0) { throw "rustc failed for fixture $Version" }
+    $compilerOutput = & rustc --crate-name farpilot_installer_fixture $source -O -o $Destination 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $detail = ($compilerOutput | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
+        throw "rustc failed for FarPilot fixture $Version`: $detail"
+    }
+    if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
+        throw "rustc reported success but FarPilot fixture $Version was not created at $Destination"
+    }
     Remove-Item -LiteralPath $source -Force
 }
 
