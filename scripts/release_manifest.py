@@ -15,7 +15,7 @@ REQUIRED_TARGETS = {
     "windows-x86_64",
 }
 SEMVER = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
-REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+REPOSITORY_COMPONENT = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 def digest(path: Path) -> str:
@@ -26,19 +26,49 @@ def digest(path: Path) -> str:
     return value.hexdigest()
 
 
+def validate_repository(repository: str) -> None:
+    components = repository.split("/")
+    if (
+        len(components) != 2
+        or any(component in {"", ".", ".."} for component in components)
+        or any(not REPOSITORY_COMPONENT.fullmatch(component) for component in components)
+    ):
+        raise SystemExit("repository must use GitHub-safe owner/name syntax")
+
+
 def parse_mapping(values: list[str], option: str) -> dict[str, Path]:
     parsed: dict[str, Path] = {}
+    source_paths: set[Path] = set()
+    resolved_paths: set[Path] = set()
     for value in values:
         key, separator, raw_path = value.partition("=")
         if not separator or not key or not raw_path:
             raise SystemExit(f"{option} requires name=path")
         if key in parsed:
             raise SystemExit(f"{option} contains duplicate name: {key}")
-        path = Path(raw_path).resolve()
-        if not path.is_file() or path.is_symlink():
+        source = Path(raw_path).expanduser()
+        if source.is_symlink():
+            raise SystemExit(f"{option} source must not be a symbolic link: {source}")
+        try:
+            unresolved = source.absolute()
+            path = source.resolve(strict=True)
+        except OSError as error:
+            raise SystemExit(f"{option} file does not exist: {source}") from error
+        if not path.is_file():
             raise SystemExit(f"{option} file does not exist or is not regular: {path}")
+        if unresolved in source_paths or path in resolved_paths:
+            raise SystemExit(f"{option} entries must use a unique source path")
+        source_paths.add(unresolved)
+        resolved_paths.add(path)
         parsed[key] = path
     return parsed
+
+
+def validate_output_names(assets: dict[str, Path], installers: dict[str, Path]) -> None:
+    names = [path.name for path in assets.values()]
+    names.extend(path.name for path in installers.values())
+    if len(names) != len(set(names)):
+        raise SystemExit("assets and installers must use a unique output filename")
 
 
 def asset_record(
@@ -62,8 +92,7 @@ def main() -> None:
 
     if not SEMVER.fullmatch(args.version):
         raise SystemExit("version must be a semantic version such as 0.2.0")
-    if not REPOSITORY.fullmatch(args.repository):
-        raise SystemExit("repository must use owner/name syntax")
+    validate_repository(args.repository)
 
     assets = parse_mapping(args.asset, "--asset")
     installers = parse_mapping(args.installer, "--installer")
@@ -73,6 +102,7 @@ def main() -> None:
         )
     if set(installers) != {"gateway"}:
         raise SystemExit("installers must contain exactly gateway")
+    validate_output_names(assets, installers)
 
     tag = f"v{args.version}"
     manifest = {
