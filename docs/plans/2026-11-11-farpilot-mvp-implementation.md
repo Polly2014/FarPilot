@@ -811,34 +811,34 @@ Expected: zero failures and zero warnings.
 - Update: `docs/stage0-runbook.md` with observed evidence only
 - Create: `docs/stage0-acceptance.md`
 
-- [ ] **Step 1: Deploy Gateway to Polly's Azure VM**
+- [x] **Step 1: Deploy Gateway to Polly's Azure VM**
 
 Follow the runbook. Do not reuse root or Polly's normal SSH account. Verify Nginx/Certbot TLS, WSS upgrade, SQLite location, service sandbox, and dedicated restricted SSH user.
 
-- [ ] **Step 2: Install Host on Windows DevBox**
+- [x] **Step 2: Install Host on Windows DevBox**
 
 Run setup as the ordinary `baoliwang` user. Verify no elevation prompt, no Windows service, no firewall rule, and no listening TCP socket. Confirm only outbound 443 reaches Gateway.
 
-- [ ] **Step 3: Complete Mac acceptance**
+- [x] **Step 3: Complete Mac acceptance**
 
 Pair a dedicated Mac key, connect with saved SSH profile, verify Herdr alternate-screen rendering, CJK, colors, keyboard controls, resize, detach, and reconnect.
 
-- [ ] **Step 4: Complete Moshi acceptance**
+- [x] **Step 4: Complete Moshi acceptance**
 
 Create/select a Moshi key, pair through the HTTPS page, pin Gateway SSH fingerprint, save profile, connect, use narrow-screen Herdr, disconnect, change networks, and reconnect. Record whether Moshi offers a documented profile-import path; do not reverse engineer an undocumented format for MVP.
 
-- [ ] **Step 5: Verify persistence and revocation**
+- [x] **Step 5: Verify persistence and revocation**
 
 Start a long Herdr agent task, disconnect all clients, wait, reconnect, and confirm continuation. Revoke the phone, confirm its active session closes and reconnection fails while Mac remains authorized.
 
-- [ ] **Step 6: Verify security boundaries**
+- [x] **Step 6: Verify security boundaries**
 
 From Mac and Moshi attempt shell commands, SSH port forwarding, agent forwarding, and access to another ungranted Host. All attempts must fail. Inspect Gateway/Host logs for absence of terminal content and private material.
 
-- [ ] **Step 7: Record acceptance evidence**
+- [x] **Step 7: Record acceptance evidence**
 
 `docs/stage0-acceptance.md` contains date, component versions, commands executed, pass/fail for all nine specification criteria, observed limitations, and rollback status. No secrets, private hostnames, public IPs, tokens, or terminal content are recorded.
 
-- [ ] **Step 8: Final verification checkpoint**
+- [x] **Step 8: Final verification checkpoint**
 
 Run automated checks again, show `git status --short`, and compare implementation against every numbered requirement in the approved spec. Report any unmet criterion plainly; do not call the MVP complete while one remains.
