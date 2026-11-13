@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-root=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
@@ -36,7 +36,9 @@ assert_contains() {
 }
 
 assert_absent() {
-    [ ! -e "$1" ] && [ ! -L "$1" ] || fail "expected path to be absent: $1"
+    if [ -e "$1" ] || [ -L "$1" ]; then
+        fail "expected path to be absent: $1"
+    fi
 }
 
 assert_not_contains() {
@@ -109,7 +111,9 @@ cat > "$tmp/gateway-installer.sh" <<'EOF'
 set -eu
 [ -n "${FARPILOT_TEST_GATEWAY_LOG:-}" ] || exit 91
 [ "${1:-}" = "--manifest" ] || exit 92
-[ -f "${2:-}" ] && [ ! -L "${2:-}" ] || exit 93
+if [ ! -f "${2:-}" ] || [ -L "${2:-}" ]; then
+    exit 93
+fi
 printf '%s\n' "$@" > "$FARPILOT_TEST_GATEWAY_LOG"
 EOF
 chmod +x "$tmp/gateway-installer.sh"
@@ -225,10 +229,10 @@ for row in \
     'Linux x86_64 farpilot-linux-x86_64' \
     'Linux aarch64 farpilot-linux-aarch64'
 do
-    set -- $row
-    os=$1
-    arch=$2
-    asset=$3
+    os=${row%% *}
+    mapping_rest=${row#* }
+    arch=${mapping_rest%% *}
+    asset=${mapping_rest#* }
     new_case "mapping-$os-$arch"
     write_manifest "$CASE/downloads/latest.json" 9.8.7 v9.8.7 "$good_sha"
     run_install "$os" "$arch" '' https://downloads.example/latest.json

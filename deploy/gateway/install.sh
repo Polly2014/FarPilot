@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROGRAM=farpilot
 SERVICE=farpilot-gateway.service
 PACKAGES=(nginx openssh-server certbot python3-certbot-nginx ca-certificates curl)
 TEST_MODE=${FARPILOT_INSTALLER_TEST_MODE:-0}
@@ -154,6 +153,7 @@ manifest_output="$TMP/manifest.values"
 parse_manifest "$MANIFEST" "$TARGET" > "$manifest_output" || die 'invalid release manifest'
 [[ $(wc -l < "$manifest_output" | tr -d ' ') == 6 ]] || die 'invalid release manifest output'
 schema=$(sed -n '1p' "$manifest_output")
+[[ "$schema" == 1 ]] || die 'unsupported manifest schema'
 version=$(sed -n '2p' "$manifest_output")
 tag=$(sed -n '3p' "$manifest_output")
 binary_url=$(sed -n '4p' "$manifest_output")
@@ -240,8 +240,8 @@ ACCOUNT_CREATE_MODE=
 preflight_account() {
   if [[ "$TEST_MODE" == 1 ]]; then
     case ${FARPILOT_TEST_ACCOUNT_STATE:-missing} in
-      missing) ACCOUNT_CREATE_MODE=user-group ;;
-      group-only) ACCOUNT_CREATE_MODE=existing-group ;;
+      missing) ACCOUNT_CREATE_MODE='user-group' ;;
+      group-only) ACCOUNT_CREATE_MODE='existing-group' ;;
       valid) ACCOUNT_CREATE_MODE= ;;
       mismatch-group|mismatch-home|mismatch-shell) die 'existing farpilot account/group is incompatible' ;;
       *) die 'invalid test account state' ;;
@@ -258,9 +258,9 @@ preflight_account() {
     [[ $(printf '%s' "$passwd_entry" | cut -d: -f7) == /bin/sh ]] || die 'existing farpilot user shell is incompatible'
     ACCOUNT_CREATE_MODE=
   elif ((group_exists)); then
-    ACCOUNT_CREATE_MODE=existing-group
+    ACCOUNT_CREATE_MODE='existing-group'
   else
-    ACCOUNT_CREATE_MODE=user-group
+    ACCOUNT_CREATE_MODE='user-group'
   fi
 }
 apply_account() {

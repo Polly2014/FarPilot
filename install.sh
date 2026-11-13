@@ -56,12 +56,14 @@ is_semver() {
     case "$semver_value" in
         ''|.*|*.|*..*|*[!0-9.]*) return 1 ;;
     esac
-    semver_old_ifs=$IFS
-    IFS=.
-    set -- $semver_value
-    IFS=$semver_old_ifs
-    [ "$#" -eq 3 ] || return 1
-    [ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] || return 1
+    semver_major=${semver_value%%.*}
+    semver_rest=${semver_value#*.}
+    [ "$semver_rest" != "$semver_value" ] || return 1
+    semver_minor=${semver_rest%%.*}
+    semver_patch=${semver_rest#*.}
+    [ "$semver_patch" != "$semver_rest" ] || return 1
+    case "$semver_patch" in *.*) return 1 ;; esac
+    [ -n "$semver_major" ] && [ -n "$semver_minor" ] && [ -n "$semver_patch" ] || return 1
     return 0
 }
 
@@ -572,7 +574,6 @@ validate_manifest_header() {
 
 parse_gateway_options() {
     gateway_has_version=0
-    gateway_has_dry_run=0
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --version)
@@ -744,7 +745,7 @@ case ":$PATH:" in
     *":$install_dir:"*) ;;
     *)
         warn "$install_dir is not in your PATH"
-        printf '    export PATH="%s:$PATH"\n' "$install_dir"
+        printf '    export PATH="%s:%s"\n' "$install_dir" '$PATH'
         ;;
 esac
 log "ready. run 'farpilot --version'"
