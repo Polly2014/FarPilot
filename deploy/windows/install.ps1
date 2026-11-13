@@ -28,7 +28,7 @@ $script:TestStateRoot = $null
 
 function Write-Step {
     param([string]$Message)
-    Write-Host "==> $Message"
+    Write-Output "==> $Message"
 }
 
 function Get-TestStatePath {
@@ -191,7 +191,7 @@ function Get-RemoteManifest {
     }
 }
 
-function Assert-ExactProperties {
+function Assert-ExactPropertySet {
     param([object]$Value, [string[]]$Expected, [string]$Label)
     if ($null -eq $Value) { throw "$Label is missing" }
     $actual = @($Value.PSObject.Properties | ForEach-Object { $_.Name })
@@ -203,7 +203,7 @@ function Assert-ExactProperties {
 
 function Get-ManifestPackage {
     param([object]$Manifest, [string]$RequestedVersion)
-    Assert-ExactProperties -Value $Manifest -Expected @('schema_version', 'version', 'tag', 'assets', 'installers') -Label 'FarPilot manifest'
+    Assert-ExactPropertySet -Value $Manifest -Expected @('schema_version', 'version', 'tag', 'assets', 'installers') -Label 'FarPilot manifest'
     if ([int]$Manifest.schema_version -ne 1) {
         throw 'Unsupported FarPilot manifest schema'
     }
@@ -218,17 +218,17 @@ function Get-ManifestPackage {
     if ($null -eq $assetsProperty -or $null -eq $assetsProperty.Value) {
         throw 'FarPilot manifest assets are missing'
     }
-    Assert-ExactProperties -Value $assetsProperty.Value -Expected @(
+    Assert-ExactPropertySet -Value $assetsProperty.Value -Expected @(
         'linux-x86_64', 'linux-aarch64', 'macos-x86_64', 'macos-aarch64', 'windows-x86_64'
     ) -Label 'FarPilot manifest assets'
-    Assert-ExactProperties -Value $Manifest.installers -Expected @('gateway') -Label 'FarPilot manifest installers'
-    Assert-ExactProperties -Value $Manifest.installers.gateway -Expected @('url', 'sha256') -Label 'FarPilot gateway installer'
+    Assert-ExactPropertySet -Value $Manifest.installers -Expected @('gateway') -Label 'FarPilot manifest installers'
+    Assert-ExactPropertySet -Value $Manifest.installers.gateway -Expected @('url', 'sha256') -Label 'FarPilot gateway installer'
     $assetProperty = $assetsProperty.Value.PSObject.Properties[$TargetName]
     if ($null -eq $assetProperty -or $null -eq $assetProperty.Value) {
         throw "FarPilot manifest has no $TargetName asset"
     }
     $asset = $assetProperty.Value
-    Assert-ExactProperties -Value $asset -Expected @('url', 'sha256', 'format') -Label 'FarPilot Windows asset'
+    Assert-ExactPropertySet -Value $asset -Expected @('url', 'sha256', 'format') -Label 'FarPilot Windows asset'
     if ([string]$asset.format -cne 'exe') {
         throw 'FarPilot Windows manifest asset must use exe format'
     }
@@ -309,7 +309,7 @@ function Get-JunctionState {
     throw "Refusing to replace unmanaged nonempty directory: $Path"
 }
 
-function Set-ManagedJunction {
+function Invoke-ManagedJunctionActivation {
     param(
         [string]$Path,
         [string]$Target,
@@ -348,7 +348,7 @@ function Restore-ManagedJunction {
     }
 }
 
-function Stop-ManagedFarPilotProcesses {
+function Invoke-ManagedFarPilotProcessStop {
     param([string]$ReleasesDir)
     if ($script:UseTestAdapters) {
         $state = Read-TestState -Name 'processes' -DefaultValue @()
@@ -399,7 +399,7 @@ function Get-FarPilotStartupTaskState {
     }
 }
 
-function Stop-FarPilotStartupTask {
+function Invoke-FarPilotStartupTaskStop {
     param([object]$State)
     if (-not ($State.Exists -and $State.Running)) { return }
     if ($script:UseTestAdapters) {
@@ -411,7 +411,7 @@ function Stop-FarPilotStartupTask {
     Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop
 }
 
-function Set-FarPilotStartupTask {
+function Invoke-FarPilotStartupTaskUpdate {
     param([string]$Executable, [object]$PreviousState, [bool]$CreateTask)
     if (-not $CreateTask -and -not $PreviousState.Exists) { return }
     if ($script:UseTestAdapters) {
@@ -536,7 +536,7 @@ function Get-UserPathState {
     }
 }
 
-function Update-UserPath {
+function Invoke-UserPathUpdate {
     param([string]$Entry, [string]$ReleasesDir, [string[]]$Aliases)
     if ($script:UseTestAdapters) {
         $state = Get-UserPathState
@@ -586,7 +586,7 @@ function Restore-UserPath {
     Publish-EnvironmentChange
 }
 
-function Remove-OldReleases {
+function Invoke-OldReleaseCleanup {
     param([string]$ReleasesDir, [string]$ActiveRelease, [int]$Keep)
     if ($Keep -lt 1) { throw 'Retain must be at least 1' }
     $active = Get-CanonicalPath $ActiveRelease
@@ -717,8 +717,8 @@ try {
 
     $taskState = Get-FarPilotStartupTaskState
     $taskStateCaptured = $true
-    Stop-FarPilotStartupTask $taskState
-    Stop-ManagedFarPilotProcesses $ReleasesDir
+    Invoke-FarPilotStartupTaskStop $taskState
+    Invoke-ManagedFarPilotProcessStop $ReleasesDir
     $pathState = Get-UserPathState
 
     $currentAttempted = $false
@@ -726,14 +726,14 @@ try {
     $pathAttempted = $false
     try {
         $currentAttempted = $true
-        $currentState = Set-ManagedJunction -Path $CurrentDir -Target $ReleaseDir -State $currentState -Root $Root
+        $currentState = Invoke-ManagedJunctionActivation -Path $CurrentDir -Target $ReleaseDir -State $currentState -Root $Root
         Invoke-TestFailure -Point 'AfterCurrentJunction'
         $binAttempted = $true
-        $binState = Set-ManagedJunction -Path $BinDir -Target $ReleaseDir -State $binState -Root $Root
+        $binState = Invoke-ManagedJunctionActivation -Path $BinDir -Target $ReleaseDir -State $binState -Root $Root
         Invoke-TestFailure -Point 'AfterBinJunction'
         $pathAttempted = $true
-        Update-UserPath -Entry $ReleaseDir -ReleasesDir $ReleasesDir -Aliases @($CurrentDir, $BinDir)
-        Set-FarPilotStartupTask -Executable (Join-Path $BinDir 'farpilot.exe') -PreviousState $taskState -CreateTask (-not $NoStartupTask)
+        Invoke-UserPathUpdate -Entry $ReleaseDir -ReleasesDir $ReleasesDir -Aliases @($CurrentDir, $BinDir)
+        Invoke-FarPilotStartupTaskUpdate -Executable (Join-Path $BinDir 'farpilot.exe') -PreviousState $taskState -CreateTask (-not $NoStartupTask)
     } catch {
         $activationError = $_
         $rollbackErrors = @()
@@ -764,9 +764,9 @@ try {
         }
     }
     (Get-Item -LiteralPath $ReleaseDir).LastWriteTimeUtc = [DateTime]::UtcNow
-    Remove-OldReleases -ReleasesDir $ReleasesDir -ActiveRelease $ReleaseDir -Keep $Retain
+    Invoke-OldReleaseCleanup -ReleasesDir $ReleasesDir -ActiveRelease $ReleaseDir -Keep $Retain
     Write-Step "Installed FarPilot $requestedVersion to $ReleaseExe"
-    Write-Host 'FarPilot opens no inbound port and creates no firewall rule.'
+    Write-Output 'FarPilot opens no inbound port and creates no firewall rule.'
 } finally {
     Remove-Item -LiteralPath $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
