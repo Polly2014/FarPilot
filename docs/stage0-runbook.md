@@ -69,22 +69,27 @@ A failed service, liveness, or readiness check restores the prior binary and man
 5. Verify `/health/live` and `/health/ready` over HTTPS.
 6. Create a five-minute enrollment code against the deployed database with `sudo -u farpilot env FARPILOT_DATABASE_URL=sqlite:///var/lib/farpilot/farpilot.db /usr/local/bin/farpilot gateway enrollment create`.
 
-### Gateway rollback
+### Gateway downgrade and rollback
 
-The installer automatically restores its previous binary and managed configuration when restart, liveness, or readiness fails. For manual recovery after an interrupted operator action:
+The primary manual rollback procedure is to rerun the verified installer pinned to a previously reviewed stable release:
 
 ```bash
-sudo systemctl stop farpilot-gateway.service
-sudo install -m 0755 /var/lib/farpilot/farpilot.rollback /usr/local/bin/farpilot
-sudo sshd -t
-sudo nginx -t
-sudo systemctl daemon-reload
-sudo systemctl restart farpilot-gateway.service
-curl -fsS https://farpilot.example.com/health/live
-curl -fsS https://farpilot.example.com/health/ready
+curl -fsSL https://farpilot.polly.wang/install.sh \
+  | sudo sh -s -- gateway --version v0.1.1
 ```
 
-Use the actual reviewed domain in the health commands. Never delete or overwrite SQLite, `authorized_keys`, SSH host keys, `/etc/farpilot/gateway.env`, or certificate state during rollback. If no rollback binary exists, restore the retained reviewed package rather than downloading an unpinned asset.
+This path reuses the same manifest SHA-256 and binary-version verification, preserves `/etc/farpilot/gateway.env`, SQLite, `authorized_keys`, SSH host keys, and certificate state, and performs the same systemd/liveness/readiness checks. If the pinned release fails health verification, the installer automatically restores the version and managed configuration that were active before the downgrade attempt.
+
+`/var/lib/farpilot/farpilot.rollback` is not a normally retained release. It may exist only as **conditional interrupted-transaction recovery**. Use it only after confirming the file exists and comparing both its SHA-256 and reported version with a reviewed published artifact:
+
+```bash
+if sudo test -f /var/lib/farpilot/farpilot.rollback; then
+  sudo sha256sum /var/lib/farpilot/farpilot.rollback
+  sudo /var/lib/farpilot/farpilot.rollback --version
+fi
+```
+
+Only after that inspection, and only when the pinned installer cannot run, may an operator stop the service, copy the inspected rollback binary into place, validate `sshd -t` and `nginx -t`, restart the service, and verify both HTTPS health endpoints. Use the actual reviewed domain in health commands. Never delete or overwrite SQLite, `authorized_keys`, SSH host keys, the environment file, or certificate state during recovery.
 
 ### Bootstrap installer endpoints
 
