@@ -28,11 +28,23 @@ assert_failure() {
 assert_contains() {
     file=$1
     value=$2
-    grep -Fq -- "$value" "$file" || fail "expected '$value' in $file"
+    if ! grep -Fq -- "$value" "$file"; then
+        printf '%s\n' "contents of $file:" >&2
+        cat "$file" >&2 || true
+        fail "expected '$value' in $file"
+    fi
 }
 
 assert_absent() {
     [ ! -e "$1" ] && [ ! -L "$1" ] || fail "expected path to be absent: $1"
+}
+
+assert_not_contains() {
+    file=$1
+    value=$2
+    if grep -Fq -- "$value" "$file"; then
+        fail "did not expect '$value' in $file"
+    fi
 }
 
 hash_file() {
@@ -312,5 +324,230 @@ run_install Darwin arm64 '' https://downloads.example/latest.json
 assert_failure
 assert_contains "$CASE/stderr" 'unsafe URL basename'
 assert_absent "$CASE/home/install-bin/farpilot"
+
+# A valid-looking target under an earlier shadow object must never override assets.
+new_case shadow-object
+cp "$tmp/shared-downloads/farpilot-macos-aarch64" "$CASE/downloads/shadow-binary"
+cat > "$CASE/downloads/latest.json" <<EOF
+{
+  "shadow": {
+    "macos-aarch64": {
+      "format": "binary",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "url": "https://downloads.example/shadow-binary"
+    }
+  },
+  "assets": {
+    "macos-aarch64": {
+      "format": "binary",
+      "sha256": "$good_sha",
+      "url": "https://downloads.example/farpilot-macos-aarch64"
+    }
+  },
+  "installers": {},
+  "schema_version": 1,
+  "tag": "v9.8.7",
+  "version": "9.8.7"
+}
+EOF
+run_install Darwin arm64 '' https://downloads.example/latest.json
+assert_status 0
+assert_contains "$CASE/curl.log" 'https://downloads.example/farpilot-macos-aarch64'
+assert_not_contains "$CASE/curl.log" 'https://downloads.example/shadow-binary'
+
+# Duplicate top-level version keys fail closed before artifact download.
+new_case duplicate-version
+cat > "$CASE/downloads/latest.json" <<EOF
+{
+  "assets": {
+    "macos-aarch64": {
+      "format": "binary",
+      "sha256": "$good_sha",
+      "url": "https://downloads.example/farpilot-macos-aarch64"
+    }
+  },
+  "installers": {},
+  "schema_version": 1,
+  "tag": "v9.8.7",
+  "version": "9.8.7",
+  "version": "9.8.7"
+}
+EOF
+run_install Darwin arm64 '' https://downloads.example/latest.json
+assert_failure
+assert_contains "$CASE/stderr" 'duplicate top-level key: version'
+assert_not_contains "$CASE/curl.log" 'farpilot-macos-aarch64'
+
+# Duplicate top-level schema_version and tag keys fail closed.
+for duplicate_top_key in schema_version tag; do
+    new_case "duplicate-$duplicate_top_key"
+    case "$duplicate_top_key" in
+        schema_version)
+            duplicate_top_line='  "schema_version": 1,'
+            ;;
+        tag)
+            duplicate_top_line='  "tag": "v9.8.7",'
+            ;;
+    esac
+    cat > "$CASE/downloads/latest.json" <<EOF
+{
+  "assets": {
+    "macos-aarch64": {
+      "format": "binary",
+      "sha256": "$good_sha",
+      "url": "https://downloads.example/farpilot-macos-aarch64"
+    }
+  },
+  "installers": {},
+  "schema_version": 1,
+$duplicate_top_line
+  "tag": "v9.8.7",
+  "version": "9.8.7"
+}
+EOF
+    run_install Darwin arm64 '' https://downloads.example/latest.json
+    assert_failure
+    assert_contains "$CASE/stderr" "duplicate top-level key: $duplicate_top_key"
+done
+
+# Duplicate top-level assets objects fail closed.
+new_case duplicate-assets
+cat > "$CASE/downloads/latest.json" <<EOF
+{
+  "assets": {
+    "macos-aarch64": {
+      "format": "binary",
+      "sha256": "$good_sha",
+      "url": "https://downloads.example/farpilot-macos-aarch64"
+    }
+  },
+  "assets": {
+    "macos-aarch64": {
+      "format": "binary",
+      "sha256": "$good_sha",
+      "url": "https://downloads.example/farpilot-macos-aarch64"
+    }
+  },
+  "installers": {},
+  "schema_version": 1,
+  "tag": "v9.8.7",
+  "version": "9.8.7"
+}
+EOF
+run_install Darwin arm64 '' https://downloads.example/latest.json
+assert_failure
+assert_contains "$CASE/stderr" 'duplicate top-level key: assets'
+
+# Duplicate target keys in the one assets object fail closed.
+new_case duplicate-target
+cat > "$CASE/downloads/latest.json" <<EOF
+{
+  "assets": {
+    "macos-aarch64": {
+      "format": "binary",
+      "sha256": "$good_sha",
+      "url": "https://downloads.example/farpilot-macos-aarch64"
+    },
+    "macos-aarch64": {
+      "format": "binary",
+      "sha256": "$good_sha",
+      "url": "https://downloads.example/farpilot-macos-aarch64"
+    }
+  },
+  "installers": {},
+  "schema_version": 1,
+  "tag": "v9.8.7",
+  "version": "9.8.7"
+}
+EOF
+run_install Darwin arm64 '' https://downloads.example/latest.json
+assert_failure
+assert_contains "$CASE/stderr" 'duplicate target key: macos-aarch64'
+
+# Duplicate selected target fields fail closed.
+for duplicate_field in url sha256 format; do
+    new_case "duplicate-field-$duplicate_field"
+    case "$duplicate_field" in
+        url)
+            duplicate_line='      "url": "https://downloads.example/farpilot-macos-aarch64",'
+            ;;
+        sha256)
+            duplicate_line="      \"sha256\": \"$good_sha\","
+            ;;
+        format)
+            duplicate_line='      "format": "binary",'
+            ;;
+    esac
+    cat > "$CASE/downloads/latest.json" <<EOF
+{
+  "assets": {
+    "macos-aarch64": {
+      "format": "binary",
+      "sha256": "$good_sha",
+      "url": "https://downloads.example/farpilot-macos-aarch64",
+$duplicate_line
+      "unused": "value"
+    }
+  },
+  "installers": {},
+  "schema_version": 1,
+  "tag": "v9.8.7",
+  "version": "9.8.7"
+}
+EOF
+    run_install Darwin arm64 '' https://downloads.example/latest.json
+    assert_failure
+    assert_contains "$CASE/stderr" "duplicate target field: $duplicate_field"
+done
+
+# Malformed indentation/nesting fails closed rather than searching another object.
+new_case malformed-nesting
+cat > "$CASE/downloads/latest.json" <<EOF
+{
+  "assets": {
+  "macos-aarch64": {
+      "format": "binary",
+      "sha256": "$good_sha",
+      "url": "https://downloads.example/farpilot-macos-aarch64"
+    }
+  },
+  "installers": {},
+  "schema_version": 1,
+  "tag": "v9.8.7",
+  "version": "9.8.7"
+}
+EOF
+run_install Darwin arm64 '' https://downloads.example/latest.json
+assert_failure
+assert_contains "$CASE/stderr" 'malformed object nesting'
+
+# Exact-key parsing ignores substring keys at every relevant nesting level.
+new_case substring-keys
+cat > "$CASE/downloads/latest.json" <<EOF
+{
+  "notversion": "0.0.0",
+  "assets": {
+    "macos-aarch64-extra": {
+      "format": "binary",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "url": "https://downloads.example/shadow-binary"
+    },
+    "macos-aarch64": {
+      "download_url": "https://downloads.example/shadow-binary",
+      "format": "binary",
+      "sha256": "$good_sha",
+      "url": "https://downloads.example/farpilot-macos-aarch64"
+    }
+  },
+  "installers": {},
+  "schema_version": 1,
+  "tag": "v9.8.7",
+  "version": "9.8.7"
+}
+EOF
+run_install Darwin arm64 '' https://downloads.example/latest.json
+assert_status 0
+assert_contains "$CASE/curl.log" 'https://downloads.example/farpilot-macos-aarch64'
+assert_not_contains "$CASE/curl.log" 'https://downloads.example/shadow-binary'
 
 printf '%s\n' 'POSIX installer tests passed'

@@ -91,52 +91,178 @@ download() {
     curl -fsSL --retry 3 --connect-timeout 10 --max-time 120 "$download_url" -o "$download_destination"
 }
 
-manifest_number() {
-    manifest_file=$1
-    manifest_name=$2
-    awk -v name="\"$manifest_name\"" '
-        index($0, name) {
-            line = $0
-            sub(/^.*:[[:space:]]*/, "", line)
-            sub(/[[:space:],}]*$/, "", line)
-            print line
-            exit
-        }
-    ' "$manifest_file"
-}
-
-manifest_string() {
-    manifest_file=$1
-    manifest_name=$2
-    awk -v name="\"$manifest_name\"" '
-        index($0, name) {
-            line = $0
-            sub(/^.*:[[:space:]]*"/, "", line)
-            sub(/"[[:space:],}]*$/, "", line)
-            print line
-            exit
-        }
-    ' "$manifest_file"
-}
-
-asset_string() {
+parse_manifest() {
     manifest_file=$1
     asset_target=$2
-    asset_field=$3
-    awk -v target="\"$asset_target\"" -v field="\"$asset_field\"" '
-        !inside && index($0, target) && $0 ~ /[{][[:space:]]*$/ {
-            inside = 1
-            next
+    awk -v selected_target="$asset_target" '
+        function fail(message) {
+            print "manifest parse error: " message > "/dev/stderr"
+            failed = 1
+            exit 1
         }
-        inside && $0 ~ /^[[:space:]]*}[,]?[[:space:]]*$/ {
-            exit
+        function member_key(text, value) {
+            value = text
+            sub(/^"/, "", value)
+            sub(/".*/, "", value)
+            return value
         }
-        inside && index($0, field) {
+        function string_value(text, value) {
+            value = text
+            sub(/^[^:]*:[[:space:]]*"/, "", value)
+            sub(/"[[:space:]]*,?[[:space:]]*$/, "", value)
+            return value
+        }
+        function number_value(text, value) {
+            value = text
+            sub(/^[^:]*:[[:space:]]*/, "", value)
+            sub(/[[:space:]]*,?[[:space:]]*$/, "", value)
+            return value
+        }
+        BEGIN {
+            depth = 0
+        }
+        {
             line = $0
-            sub(/^.*:[[:space:]]*"/, "", line)
-            sub(/"[[:space:],}]*$/, "", line)
-            print line
-            exit
+            if (line ~ /^[[:space:]]*$/) {
+                next
+            }
+            match(line, /[^ ]/)
+            indent = RSTART ? RSTART - 1 : length(line)
+            text = line
+            sub(/^ */, "", text)
+
+            if (NR == 1) {
+                if (indent != 0 || text != "{") {
+                    fail("manifest root must be an object")
+                }
+                depth = 1
+                next
+            }
+            if (root_closed) {
+                fail("content appears after manifest root")
+            }
+
+            if (text ~ /^}[,]?[[:space:]]*$/) {
+                if (depth < 1 || indent != 2 * (depth - 1)) {
+                    fail("malformed object nesting")
+                }
+                if (in_target && depth == target_depth) {
+                    in_target = 0
+                    target_depth = 0
+                }
+                if (in_assets && depth == assets_depth) {
+                    in_assets = 0
+                    assets_depth = 0
+                }
+                depth--
+                if (depth == 0) {
+                    if (text != "}") {
+                        fail("manifest root must not have a trailing comma")
+                    }
+                    root_closed = 1
+                }
+                next
+            }
+
+            if (indent != 2 * depth) {
+                fail("malformed object nesting")
+            }
+            if (text !~ /^"[^"]+"[[:space:]]*:/) {
+                fail("malformed object member")
+            }
+            key = member_key(text)
+
+            if (text ~ /^"[^"]+"[[:space:]]*:[[:space:]]*[{]$/) {
+                if (depth == 1 && key == "assets") {
+                    assets_count++
+                    if (assets_count > 1) {
+                        fail("duplicate top-level key: assets")
+                    }
+                    in_assets = 1
+                    assets_depth = depth + 1
+                } else if (in_assets && depth == assets_depth && key == selected_target) {
+                    target_count++
+                    if (target_count > 1) {
+                        fail("duplicate target key: " selected_target)
+                    }
+                    in_target = 1
+                    target_depth = depth + 1
+                }
+                depth++
+                next
+            }
+
+            if (depth == 1 && key == "schema_version") {
+                schema_count++
+                if (schema_count > 1) {
+                    fail("duplicate top-level key: schema_version")
+                }
+                if (text !~ /^"schema_version"[[:space:]]*:[[:space:]]*[0-9]+[[:space:]]*,?[[:space:]]*$/) {
+                    fail("invalid top-level schema_version")
+                }
+                schema = number_value(text)
+            } else if (depth == 1 && key == "version") {
+                version_count++
+                if (version_count > 1) {
+                    fail("duplicate top-level key: version")
+                }
+                if (text !~ /^"version"[[:space:]]*:[[:space:]]*"[^"]*"[[:space:]]*,?[[:space:]]*$/) {
+                    fail("invalid top-level version")
+                }
+                version = string_value(text)
+            } else if (depth == 1 && key == "tag") {
+                tag_count++
+                if (tag_count > 1) {
+                    fail("duplicate top-level key: tag")
+                }
+                if (text !~ /^"tag"[[:space:]]*:[[:space:]]*"[^"]*"[[:space:]]*,?[[:space:]]*$/) {
+                    fail("invalid top-level tag")
+                }
+                tag = string_value(text)
+            } else if (depth == 1 && key == "assets") {
+                assets_count++
+                if (assets_count > 1) {
+                    fail("duplicate top-level key: assets")
+                }
+                if (text !~ /^"assets"[[:space:]]*:[[:space:]]*[{]}[[:space:]]*,?[[:space:]]*$/) {
+                    fail("top-level assets must be an object")
+                }
+            } else if (in_target && depth == target_depth && (key == "url" || key == "sha256" || key == "format")) {
+                if (text !~ /^"[^"]+"[[:space:]]*:[[:space:]]*"[^"]*"[[:space:]]*,?[[:space:]]*$/) {
+                    fail("invalid selected target field: " key)
+                }
+                if (key == "url") {
+                    url_count++
+                    if (url_count > 1) fail("duplicate target field: url")
+                    asset_url = string_value(text)
+                } else if (key == "sha256") {
+                    sha_count++
+                    if (sha_count > 1) fail("duplicate target field: sha256")
+                    asset_sha = string_value(text)
+                } else {
+                    format_count++
+                    if (format_count > 1) fail("duplicate target field: format")
+                    asset_format = string_value(text)
+                }
+            }
+        }
+        END {
+            if (failed) exit 1
+            if (!root_closed || depth != 0) fail("unterminated manifest object")
+            if (schema_count != 1) fail("manifest requires exactly one top-level schema_version")
+            if (version_count != 1) fail("manifest requires exactly one top-level version")
+            if (tag_count != 1) fail("manifest requires exactly one top-level tag")
+            if (assets_count != 1) fail("manifest requires exactly one top-level assets object")
+            if (target_count != 1) fail("manifest does not include target " selected_target)
+            if (url_count != 1 || sha_count != 1 || format_count != 1) {
+                fail("selected target requires exactly one url, sha256, and format")
+            }
+            print schema
+            print version
+            print tag
+            print asset_url
+            print asset_sha
+            print asset_format
         }
     ' "$manifest_file"
 }
@@ -223,21 +349,23 @@ manifest_path=$TMP/manifest.json
 log "fetching release manifest"
 download "$MANIFEST_URL" "$manifest_path" || die "failed to download release manifest"
 
-schema_version=$(manifest_number "$manifest_path" schema_version)
+parsed_manifest=$TMP/manifest.parsed
+if ! parse_manifest "$manifest_path" "$TARGET" > "$parsed_manifest"; then
+    die "invalid release manifest"
+fi
+schema_version=$(awk 'NR == 1 { print; exit }' "$parsed_manifest")
+manifest_version=$(awk 'NR == 2 { print; exit }' "$parsed_manifest")
+manifest_tag=$(awk 'NR == 3 { print; exit }' "$parsed_manifest")
+asset_url=$(awk 'NR == 4 { print; exit }' "$parsed_manifest")
+asset_sha256=$(awk 'NR == 5 { print; exit }' "$parsed_manifest")
+asset_format=$(awk 'NR == 6 { print; exit }' "$parsed_manifest")
 [ "$schema_version" = 1 ] || die "unsupported manifest schema"
-manifest_version=$(manifest_string "$manifest_path" version)
-manifest_tag=$(manifest_string "$manifest_path" tag)
 is_semver "$manifest_version" || die "manifest contains an invalid version"
 [ "$manifest_tag" = "v$manifest_version" ] || die "manifest tag does not match version"
 if [ -n "$requested_version" ] && [ "$manifest_version" != "$requested_version" ]; then
     die "manifest version does not match requested version"
 fi
 
-asset_url=$(asset_string "$manifest_path" "$TARGET" url)
-asset_sha256=$(asset_string "$manifest_path" "$TARGET" sha256)
-asset_format=$(asset_string "$manifest_path" "$TARGET" format)
-[ -n "$asset_url" ] && [ -n "$asset_sha256" ] && [ -n "$asset_format" ] \
-    || die "manifest does not include target $TARGET"
 require_https asset "$asset_url"
 [ "$asset_format" = binary ] || die "manifest target $TARGET has unsupported format: $asset_format"
 validate_digest "$asset_sha256"
