@@ -28,3 +28,23 @@ Record only sanitized evidence. Do not include public IPs, private hostnames, to
 ## Rollback result
 
 A full binary rollback was not required. Gateway restart recovery, Host automatic reconnect, device revocation, key rotation, and independent Mac fallback were verified. The previous Gateway binary and pre-PTY `authorized_keys` backup were retained during deployment for manual rollback.
+
+## One-command installer acceptance
+
+This section is separate from the nine completed Stage 0 criteria above. It records only evidence gathered for the new installer/release path; it does not retroactively change the original results.
+
+### Automated evidence
+
+| Check | Result | Sanitized evidence |
+|---|---|---|
+| Release manifest generation/validation | Pass | Standard-library generator and validator regression suite passes 20 tests, including path, symlink, duplicate asset, URL, and digest adversarial cases |
+| POSIX CLI install/upgrade/rollback | Pass | Offline target matrix, checksum, version, atomic activation, lock, rollback, dry-run, and Gateway-dispatch suite passes under POSIX shell fixtures |
+| Windows RED/GREEN installer TDD | Pass | GitHub Actions run `43444142945` failed at the expected missing local-package/versioned behavior; later runs `43455934371` and `43457837177` passed Windows installer tests, PSScriptAnalyzer, and all platform/security jobs |
+| Gateway provisioning/rollback fixtures | Pass | Isolated Ubuntu-root command-boundary suite covers package/account/config/TLS/service/health success and injected rollback failures without real system mutation |
+| Bootstrap route and workflow structure | Pass | Exact Nginx route, workflow permission, five-target matrix, exact asset-set, and tag-only publication mutation checks pass |
+| First stable Release published | Pending | No tag or GitHub Release has been created |
+| Public latest endpoints deployed | Pending | Reviewed Nginx redirects exist in source but have not been reloaded on the live Gateway |
+| Fresh Mac install from public endpoint | Pending | Requires the first stable Release and live bootstrap route |
+| Live Gateway upgrade and health rollback | Pending | Requires a disposable/live Ubuntu maintenance window and operator approval |
+
+Do not mark the pending rows Pass from a dry-run artifact alone. Before public announcement, run the Release workflow with `dry_run=true`, inspect and validate its exact nine-file artifact, then complete fresh-device and live Gateway acceptance with sanitized evidence.

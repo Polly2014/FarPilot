@@ -11,3 +11,17 @@ test -f "$root/Cargo.toml"
 for crate in farpilot-core farpilot-gateway farpilot-host farpilot-cli; do
   test -f "$root/crates/$crate/Cargo.toml"
 done
+
+readme="$root/README.md"
+runbook="$root/docs/stage0-runbook.md"
+security="$root/docs/installer-security.md"
+
+test -f "$security"
+grep -Fq 'curl -fsSL https://farpilot.polly.wang/install.sh | sh' "$readme"
+grep -Fq 'irm https://farpilot.polly.wang/install.ps1 | iex' "$readme"
+grep -Fq -- '--version v0.1.1' "$readme"
+grep -Fq 'gateway --domain' "$runbook"
+grep -Fq -- '--dry-run' "$runbook"
+grep -Fq 'SHA-256' "$security"
+grep -Fq 'GitHub Release' "$security"
+grep -Fq 'simultaneous compromise' "$security"
