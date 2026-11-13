@@ -51,14 +51,49 @@ fn main() {
     Remove-Item -LiteralPath $source -Force
 }
 
+function Initialize-TestState {
+    param([string]$LocalAppData)
+    $state = Join-Path $LocalAppData 'installer-test-state'
+    New-Item -ItemType Directory -Force -Path $state | Out-Null
+    $pathFile = Join-Path $state 'path.json'
+    if (-not (Test-Path -LiteralPath $pathFile)) {
+        [PSCustomObject]@{ Exists = $true; Value = 'C:\Unrelated'; Kind = 'String'; ProcessValue = 'C:\Unrelated' } |
+            ConvertTo-Json | Set-Content -LiteralPath $pathFile -Encoding UTF8
+    }
+    $processFile = Join-Path $state 'processes.json'
+    if (-not (Test-Path -LiteralPath $processFile)) { '[]' | Set-Content -LiteralPath $processFile -Encoding UTF8 }
+    $taskFile = Join-Path $state 'task.json'
+    if (-not (Test-Path -LiteralPath $taskFile)) {
+        [PSCustomObject]@{ Exists = $false; Running = $false; Executable = $null; Arguments = $null; UserId = $null; RunLevel = $null } |
+            ConvertTo-Json | Set-Content -LiteralPath $taskFile -Encoding UTF8
+    }
+    return $state
+}
+
+function Get-TestState {
+    param([string]$LocalAppData, [string]$Name)
+    $path = Join-Path (Initialize-TestState $LocalAppData) "$Name.json"
+    return Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+}
+
+function Set-TestState {
+    param([string]$LocalAppData, [string]$Name, [object]$Value)
+    $path = Join-Path (Initialize-TestState $LocalAppData) "$Name.json"
+    $Value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $path -Encoding UTF8
+}
+
 function Invoke-InstallerProcess {
     param(
         [string]$LocalAppData,
         [string]$PackagePath,
         [string]$Version,
         [string]$Sha256,
-        [switch]$DryRun
+        [switch]$DryRun,
+        [switch]$EnableStartupTask,
+        [string]$FailAfter = '',
+        [int]$Retain = 3
     )
+    $testState = Initialize-TestState $LocalAppData
     $arguments = @(
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
@@ -66,19 +101,24 @@ function Invoke-InstallerProcess {
         '-LocalPackagePath', $PackagePath,
         '-LocalPackageVersion', $Version,
         '-LocalPackageSha256', $Sha256,
-        '-NoStartupTask',
-        '-SkipPathMutation'
+        '-TestStateDirectory', $testState,
+        '-Retain', [string]$Retain
     )
+    if (-not $EnableStartupTask) { $arguments += '-NoStartupTask' }
     if ($DryRun) { $arguments += '-DryRun' }
-    $previous = $env:LOCALAPPDATA
+    if (-not [string]::IsNullOrWhiteSpace($FailAfter)) { $arguments += @('-TestFailAfter', $FailAfter) }
+    $previousLocalAppData = $env:LOCALAPPDATA
+    $previousTestMode = $env:FARPILOT_INSTALLER_TEST_MODE
     try {
         $env:LOCALAPPDATA = $LocalAppData
+        $env:FARPILOT_INSTALLER_TEST_MODE = '1'
         $output = & $PowerShellExe @arguments 2>&1 | Out-String
         $exitCode = $LASTEXITCODE
     } finally {
-        $env:LOCALAPPDATA = $previous
+        $env:LOCALAPPDATA = $previousLocalAppData
+        if ($null -eq $previousTestMode) { Remove-Item Env:FARPILOT_INSTALLER_TEST_MODE -ErrorAction SilentlyContinue } else { $env:FARPILOT_INSTALLER_TEST_MODE = $previousTestMode }
     }
-    return [PSCustomObject]@{ ExitCode = $exitCode; Output = $output }
+    return [PSCustomObject]@{ ExitCode = $exitCode; Output = $output; TestState = $testState }
 }
 
 function Get-JunctionTarget {
@@ -98,9 +138,16 @@ function New-ScenarioRoot {
 }
 
 function Install-Fixture {
-    param([string]$Scenario, [string]$Package, [string]$Version)
+    param(
+        [string]$Scenario,
+        [string]$Package,
+        [string]$Version,
+        [switch]$EnableStartupTask,
+        [string]$FailAfter = '',
+        [int]$Retain = 3
+    )
     $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $Package).Hash.ToLowerInvariant()
-    $result = Invoke-InstallerProcess -LocalAppData $Scenario -PackagePath $Package -Version $Version -Sha256 $sha
+    $result = Invoke-InstallerProcess -LocalAppData $Scenario -PackagePath $Package -Version $Version -Sha256 $sha -EnableStartupTask:$EnableStartupTask -FailAfter $FailAfter -Retain $Retain
     if ($result.ExitCode -ne 0) { throw "installer failed for $Version`: $($result.Output)" }
     return $result
 }
@@ -127,7 +174,7 @@ try {
     Assert-True (Test-Path -LiteralPath $releaseExe -PathType Leaf) 'versioned release executable was not installed'
     Assert-Equal ([IO.Path]::GetFullPath($releaseDir).TrimEnd('\')) (Get-JunctionTarget (Join-Path $root 'current')) 'current junction target is wrong'
     Assert-Equal ([IO.Path]::GetFullPath($releaseDir).TrimEnd('\')) (Get-JunctionTarget (Join-Path $root 'bin')) 'bin junction target is wrong'
-    Assert-Equal $pathBefore ([Environment]::GetEnvironmentVariable('Path', 'User')) 'SkipPathMutation changed the real user PATH'
+    Assert-Equal $pathBefore ([Environment]::GetEnvironmentVariable('Path', 'User')) 'test PATH adapter changed the real user PATH'
 
     # Same release is idempotent and does not replace the executable.
     $beforeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $releaseExe).Hash
@@ -195,6 +242,105 @@ try {
     Assert-Equal 3 $releaseDirectories.Count 'retention did not keep exactly active plus two prior releases'
     Assert-True (($releaseDirectories.Name -contains '0.2.3-x86_64-pc-windows-msvc')) 'active release was removed by retention'
 
+    # Retention always keeps an older active release plus only the newest Retain-1 non-active releases.
+    $olderActive = New-ScenarioRoot 'retention-older-active'
+    foreach ($version in $versions) { Install-Fixture -Scenario $olderActive -Package $packages[$version] -Version $version -Retain 10 | Out-Null }
+    $olderRoot = Join-Path $olderActive 'FarPilot'
+    $olderReleases = Join-Path $olderRoot 'releases'
+    $oldActiveRelease = Join-Path $olderReleases '0.2.0-x86_64-pc-windows-msvc'
+    foreach ($alias in @('current', 'bin')) {
+        $aliasPath = Join-Path $olderRoot $alias
+        Remove-Item -LiteralPath $aliasPath -Force
+        New-Item -ItemType Junction -Path $aliasPath -Target $oldActiveRelease | Out-Null
+    }
+    (Get-Item (Join-Path $olderReleases '0.2.1-x86_64-pc-windows-msvc')).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-3)
+    (Get-Item (Join-Path $olderReleases '0.2.2-x86_64-pc-windows-msvc')).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-2)
+    (Get-Item (Join-Path $olderReleases '0.2.3-x86_64-pc-windows-msvc')).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-1)
+    Install-Fixture -Scenario $olderActive -Package $packages['0.2.0'] -Version '0.2.0' -Retain 3 | Out-Null
+    $olderKept = @(Get-ChildItem -LiteralPath $olderReleases -Directory | Where-Object { -not $_.Name.StartsWith('.') })
+    Assert-Equal 3 $olderKept.Count 'retention kept more than active plus Retain-1 non-active releases'
+    Assert-True ($olderKept.Name -contains '0.2.0-x86_64-pc-windows-msvc') 'older active release was removed'
+    Assert-True ($olderKept.Name -contains '0.2.3-x86_64-pc-windows-msvc') 'newest non-active release was removed'
+    Assert-True ($olderKept.Name -contains '0.2.2-x86_64-pc-windows-msvc') 'second-newest non-active release was removed'
+    Assert-True (-not ($olderKept.Name -contains '0.2.1-x86_64-pc-windows-msvc')) 'third non-active release was retained'
+
+    # Test adapters prove PATH, process, and Scheduled Task behavior without real machine mutation.
+    $adapter = New-ScenarioRoot 'behavior-adapters'
+    $adapterRoot = Join-Path $adapter 'FarPilot'
+    $adapterRelease = Join-Path $adapterRoot 'releases\0.2.0-x86_64-pc-windows-msvc'
+    Set-TestState -LocalAppData $adapter -Name 'path' -Value ([PSCustomObject]@{
+        Exists = $true
+        Value = "C:\Unrelated;$adapterRoot\releases\0.1.0-x86_64-pc-windows-msvc;$adapterRoot\bin"
+        Kind = 'String'
+        ProcessValue = "C:\Unrelated;$adapterRoot\current"
+    })
+    Set-TestState -LocalAppData $adapter -Name 'processes' -Value @(
+        [PSCustomObject]@{ Id = 101; Name = 'farpilot.exe'; ExecutablePath = "$adapterRoot\releases\0.1.0-x86_64-pc-windows-msvc\farpilot.exe"; Stopped = $false },
+        [PSCustomObject]@{ Id = 102; Name = 'farpilot.exe'; ExecutablePath = 'C:\External\farpilot.exe'; Stopped = $false },
+        [PSCustomObject]@{ Id = 103; Name = 'other.exe'; ExecutablePath = "$adapterRoot\releases\0.1.0-x86_64-pc-windows-msvc\other.exe"; Stopped = $false }
+    )
+    Install-Fixture -Scenario $adapter -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
+    $pathState = Get-TestState -LocalAppData $adapter -Name 'path'
+    $pathParts = @([string]$pathState.Value -split ';')
+    Assert-Equal ([IO.Path]::GetFullPath($adapterRelease).TrimEnd('\')) $pathParts[0] 'active release is not first on PATH'
+    Assert-True ($pathParts -contains 'C:\Unrelated') 'unrelated PATH entry was removed'
+    Assert-True (-not (($pathParts -join ';') -match '0\.1\.0-x86_64')) 'stale managed release remained on PATH'
+    Assert-True (-not ($pathParts -contains "$adapterRoot\bin")) 'managed bin alias remained on PATH'
+    $pathBeforeReinstall = Get-Content -LiteralPath (Join-Path (Initialize-TestState $adapter) 'path.json') -Raw
+    Install-Fixture -Scenario $adapter -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
+    Assert-Equal $pathBeforeReinstall (Get-Content -LiteralPath (Join-Path (Initialize-TestState $adapter) 'path.json') -Raw) 'PATH update was not idempotent'
+    $processState = @(Get-TestState -LocalAppData $adapter -Name 'processes')
+    Assert-True ([bool]$processState[0].Stopped) 'managed FarPilot process was not stopped'
+    Assert-True (-not [bool]$processState[1].Stopped) 'external same-name process was stopped'
+    Assert-True (-not [bool]$processState[2].Stopped) 'non-FarPilot process was stopped'
+    $taskState = Get-TestState -LocalAppData $adapter -Name 'task'
+    Assert-True ([bool]$taskState.Exists) 'default fresh install did not create startup task'
+    Assert-Equal (Join-Path $adapterRoot 'bin\farpilot.exe') ([string]$taskState.Executable) 'startup task executable is wrong'
+    Assert-Equal 'host start' ([string]$taskState.Arguments) 'startup task arguments are wrong'
+    Assert-Equal 'Limited' ([string]$taskState.RunLevel) 'startup task run level is not limited'
+
+    $noTask = New-ScenarioRoot 'no-startup-task'
+    Install-Fixture -Scenario $noTask -Package $packages['0.2.0'] -Version '0.2.0' | Out-Null
+    Assert-True (-not [bool](Get-TestState -LocalAppData $noTask -Name 'task').Exists) 'NoStartupTask created a startup task'
+
+    # A prior running task is updated and restarted after successful activation.
+    $runningTask = New-ScenarioRoot 'running-task'
+    Set-TestState -LocalAppData $runningTask -Name 'task' -Value ([PSCustomObject]@{
+        Exists = $true; Running = $true; Executable = 'C:\Old\farpilot.exe'; Arguments = 'host start'
+        UserId = $env:USERNAME; RunLevel = 'Limited'
+    })
+    Install-Fixture -Scenario $runningTask -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
+    $runningTaskState = Get-TestState -LocalAppData $runningTask -Name 'task'
+    Assert-True ([bool]$runningTaskState.Running) 'prior running task was not restarted'
+    Assert-Equal (Join-Path $runningTask 'FarPilot\bin\farpilot.exe') ([string]$runningTaskState.Executable) 'existing task was not updated'
+
+    # Injected failures after each activation boundary restore all prior observable state.
+    foreach ($failurePoint in @('AfterCurrentJunction', 'AfterBinJunction', 'AfterPathUpdate', 'DuringTaskUpdate', 'DuringTaskStart')) {
+        $transaction = New-ScenarioRoot ("transaction-" + $failurePoint)
+        Install-Fixture -Scenario $transaction -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
+        $transactionRoot = Join-Path $transaction 'FarPilot'
+        'identity-sentinel' | Set-Content -LiteralPath (Join-Path $transactionRoot 'host-identity.json')
+        'config-sentinel' | Set-Content -LiteralPath (Join-Path $transactionRoot 'host-config.json')
+        $priorTask = Get-TestState -LocalAppData $transaction -Name 'task'
+        $priorTask.Running = $true
+        Set-TestState -LocalAppData $transaction -Name 'task' -Value $priorTask
+        $priorCurrent = Get-JunctionTarget (Join-Path $transactionRoot 'current')
+        $priorBin = Get-JunctionTarget (Join-Path $transactionRoot 'bin')
+        $priorPathJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $transaction) 'path.json') -Raw
+        $priorTaskJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $transaction) 'task.json') -Raw
+        $failure = Invoke-InstallerProcess -LocalAppData $transaction -PackagePath $packages['0.2.1'] -Version '0.2.1' -Sha256 (Get-FileHash -Algorithm SHA256 $packages['0.2.1']).Hash -EnableStartupTask -FailAfter $failurePoint
+        Assert-True ($failure.ExitCode -ne 0) "$failurePoint unexpectedly succeeded"
+        Assert-Equal $priorCurrent (Get-JunctionTarget (Join-Path $transactionRoot 'current')) "$failurePoint did not restore current"
+        Assert-Equal $priorBin (Get-JunctionTarget (Join-Path $transactionRoot 'bin')) "$failurePoint did not restore bin"
+        Assert-Equal $priorPathJson (Get-Content -LiteralPath (Join-Path (Initialize-TestState $transaction) 'path.json') -Raw) "$failurePoint did not restore PATH"
+        Assert-Equal $priorTaskJson (Get-Content -LiteralPath (Join-Path (Initialize-TestState $transaction) 'task.json') -Raw) "$failurePoint did not restore task"
+        Assert-Equal 'identity-sentinel' (Get-Content -LiteralPath (Join-Path $transactionRoot 'host-identity.json') -Raw).Trim() "$failurePoint changed identity"
+        Assert-Equal 'config-sentinel' (Get-Content -LiteralPath (Join-Path $transactionRoot 'host-config.json') -Raw).Trim() "$failurePoint changed config"
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $transactionRoot 'releases\0.2.1-x86_64-pc-windows-msvc'))) "$failurePoint left new release"
+        $transactionArtifacts = @(Get-ChildItem -LiteralPath $transactionRoot -Force -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.(staging|backup|legacy)\.' })
+        Assert-Equal 0 $transactionArtifacts.Count "$failurePoint left transaction artifacts"
+    }
+
     # DryRun makes no FarPilot root and leaves user PATH unchanged.
     $dryRun = New-ScenarioRoot 'dry-run'
     $dryPathBefore = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -207,6 +353,8 @@ try {
     $source = Get-Content -LiteralPath $Installer -Raw
     Assert-True ($source -match 'function\s+Stop-ManagedFarPilotProcesses') 'managed process stop boundary is missing'
     Assert-True ($source -match 'function\s+Set-FarPilotStartupTask') 'startup task boundary is missing'
+    Assert-True ($source -match 'function\s+Restore-FarPilotStartupTask') 'startup task rollback boundary is missing'
+    Assert-True ($source -match 'function\s+Restore-UserPath') 'PATH rollback boundary is missing'
 
     Write-Host 'FarPilot Windows installer behavior verified'
 } finally {

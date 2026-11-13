@@ -9,9 +9,9 @@ param(
     [string]$LocalPackagePath,
     [string]$LocalPackageVersion,
     [string]$LocalPackageSha256,
-    [switch]$SkipPathMutation,
-    [switch]$SkipProcessManagement,
-    [switch]$SkipStartupTaskOperations
+    [string]$TestStateDirectory,
+    [ValidateSet('', 'AfterCurrentJunction', 'AfterBinJunction', 'AfterPathUpdate', 'DuringTaskUpdate', 'DuringTaskStart')]
+    [string]$TestFailAfter = ''
 )
 
 Set-StrictMode -Version Latest
@@ -23,10 +23,38 @@ $TargetName = 'windows-x86_64'
 $RepositoryOwner = 'Polly2014'
 $RepositoryName = 'FarPilot'
 $TaskName = 'FarPilot Host'
+$script:UseTestAdapters = $false
+$script:TestStateRoot = $null
 
 function Write-Step {
     param([string]$Message)
     Write-Host "==> $Message"
+}
+
+function Get-TestStatePath {
+    param([string]$Name)
+    if (-not $script:UseTestAdapters) { throw 'Test adapter requested outside test mode' }
+    return Join-Path $script:TestStateRoot "$Name.json"
+}
+
+function Read-TestState {
+    param([string]$Name, [object]$DefaultValue)
+    $path = Get-TestStatePath $Name
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $DefaultValue }
+    return Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+}
+
+function Write-TestState {
+    param([string]$Name, [object]$Value)
+    $path = Get-TestStatePath $Name
+    $Value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $path -Encoding UTF8
+}
+
+function Invoke-TestFailure {
+    param([string]$Point)
+    if ($script:UseTestAdapters -and $TestFailAfter -ceq $Point) {
+        throw "Injected FarPilot installer failure: $Point"
+    }
 }
 
 function Normalize-Version {
@@ -322,6 +350,18 @@ function Restore-ManagedJunction {
 
 function Stop-ManagedFarPilotProcesses {
     param([string]$ReleasesDir)
+    if ($script:UseTestAdapters) {
+        $state = Read-TestState -Name 'processes' -DefaultValue @()
+        foreach ($process in @($state)) {
+            $path = [string]$process.ExecutablePath
+            if ([string]$process.Name -ieq 'farpilot.exe' -and -not [string]::IsNullOrWhiteSpace($path) -and
+                (Test-PathInside -Path $path -Parent $ReleasesDir)) {
+                $process.Stopped = $true
+            }
+        }
+        Write-TestState -Name 'processes' -Value @($state)
+        return
+    }
     $processes = Get-CimInstance Win32_Process -Filter "Name = 'farpilot.exe'" -ErrorAction SilentlyContinue
     foreach ($process in @($processes)) {
         $path = [string]$process.ExecutablePath
@@ -332,6 +372,22 @@ function Stop-ManagedFarPilotProcesses {
 }
 
 function Get-FarPilotStartupTaskState {
+    if ($script:UseTestAdapters) {
+        $missing = [PSCustomObject]@{
+            Exists = $false; Running = $false; Executable = $null; Arguments = $null
+            UserId = $null; RunLevel = $null; Definition = $null
+        }
+        $state = Read-TestState -Name 'task' -DefaultValue $missing
+        return [PSCustomObject]@{
+            Exists = [bool]$state.Exists
+            Running = [bool]$state.Running
+            Executable = [string]$state.Executable
+            Arguments = [string]$state.Arguments
+            UserId = [string]$state.UserId
+            RunLevel = [string]$state.RunLevel
+            Definition = $state
+        }
+    }
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if ($null -eq $task) {
         return [PSCustomObject]@{ Exists = $false; Running = $false; Definition = $null }
@@ -345,25 +401,61 @@ function Get-FarPilotStartupTaskState {
 
 function Stop-FarPilotStartupTask {
     param([object]$State)
-    if ($State.Exists -and $State.Running) {
-        Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+    if (-not ($State.Exists -and $State.Running)) { return }
+    if ($script:UseTestAdapters) {
+        $updated = Read-TestState -Name 'task' -DefaultValue $State.Definition
+        $updated.Running = $false
+        Write-TestState -Name 'task' -Value $updated
+        return
     }
+    Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop
 }
 
 function Set-FarPilotStartupTask {
     param([string]$Executable, [object]$PreviousState, [bool]$CreateTask)
     if (-not $CreateTask -and -not $PreviousState.Exists) { return }
+    if ($script:UseTestAdapters) {
+        $updated = [PSCustomObject]@{
+            Exists = $true
+            Running = $false
+            Executable = $Executable
+            Arguments = 'host start'
+            UserId = $env:USERNAME
+            RunLevel = 'Limited'
+        }
+        Write-TestState -Name 'task' -Value $updated
+        Invoke-TestFailure -Point 'DuringTaskUpdate'
+        if ($PreviousState.Running) {
+            Invoke-TestFailure -Point 'DuringTaskStart'
+            $updated.Running = $true
+            Write-TestState -Name 'task' -Value $updated
+        }
+        return
+    }
     $action = New-ScheduledTaskAction -Execute $Executable -Argument 'host start'
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
     $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+    Invoke-TestFailure -Point 'DuringTaskUpdate'
     if ($PreviousState.Running) {
+        Invoke-TestFailure -Point 'DuringTaskStart'
         Start-ScheduledTask -TaskName $TaskName
     }
 }
 
 function Restore-FarPilotStartupTask {
     param([object]$State)
+    if ($script:UseTestAdapters) {
+        if ($State.Exists) {
+            Write-TestState -Name 'task' -Value $State.Definition
+        } else {
+            Write-TestState -Name 'task' -Value ([PSCustomObject]@{
+                Exists = $false; Running = $false; Executable = $null; Arguments = $null
+                UserId = $null; RunLevel = $null
+            })
+        }
+        return
+    }
     $current = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if (-not $State.Exists) {
         if ($null -ne $current) {
@@ -412,6 +504,16 @@ public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint m
 }
 
 function Get-UserPathState {
+    if ($script:UseTestAdapters) {
+        $default = [PSCustomObject]@{ Exists = $false; Value = $null; Kind = 'String'; ProcessValue = $env:Path }
+        $state = Read-TestState -Name 'path' -DefaultValue $default
+        return [PSCustomObject]@{
+            Exists = [bool]$state.Exists
+            Value = [string]$state.Value
+            Kind = [string]$state.Kind
+            ProcessValue = [string]$state.ProcessValue
+        }
+    }
     $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
     try {
         if ($null -eq $key -or -not ($key.GetValueNames() -contains 'Path')) {
@@ -436,6 +538,16 @@ function Get-UserPathState {
 
 function Update-UserPath {
     param([string]$Entry, [string]$ReleasesDir, [string[]]$Aliases)
+    if ($script:UseTestAdapters) {
+        $state = Get-UserPathState
+        $updated = Prepend-ManagedPath -PathValue $state.Value -Entry $Entry -ReleasesDir $ReleasesDir -Aliases $Aliases
+        $processUpdated = Prepend-ManagedPath -PathValue $state.ProcessValue -Entry $Entry -ReleasesDir $ReleasesDir -Aliases $Aliases
+        Write-TestState -Name 'path' -Value ([PSCustomObject]@{
+            Exists = $true; Value = $updated; Kind = $state.Kind; ProcessValue = $processUpdated
+        })
+        Invoke-TestFailure -Point 'AfterPathUpdate'
+        return
+    }
     $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
     if ($null -eq $key) { throw 'Unable to open current-user environment registry key' }
     try {
@@ -453,6 +565,12 @@ function Update-UserPath {
 
 function Restore-UserPath {
     param([object]$State)
+    if ($script:UseTestAdapters) {
+        Write-TestState -Name 'path' -Value ([PSCustomObject]@{
+            Exists = $State.Exists; Value = $State.Value; Kind = $State.Kind; ProcessValue = $State.ProcessValue
+        })
+        return
+    }
     $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
     if ($null -eq $key) { throw 'Unable to open current-user environment registry key during rollback' }
     try {
@@ -475,15 +593,13 @@ function Remove-OldReleases {
     $directories = @(Get-ChildItem -LiteralPath $ReleasesDir -Directory -Force | Where-Object {
         -not $_.Name.StartsWith('.') -and (Test-RegularDirectory $_.FullName)
     } | Sort-Object LastWriteTimeUtc -Descending)
-    $kept = 0
+    $nonActiveKept = 0
+    $nonActiveLimit = $Keep - 1
     foreach ($directory in $directories) {
         $path = Get-CanonicalPath $directory.FullName
-        if ($path -ieq $active) {
-            $kept += 1
-            continue
-        }
-        if ($kept -lt $Keep) {
-            $kept += 1
+        if ($path -ieq $active) { continue }
+        if ($nonActiveKept -lt $nonActiveLimit) {
+            $nonActiveKept += 1
             continue
         }
         if (Test-PathInside -Path $path -Parent $ReleasesDir) {
@@ -499,6 +615,17 @@ if ($Retain -lt 1) { throw 'Retain must be at least 1' }
 $localFields = @($LocalPackagePath, $LocalPackageVersion, $LocalPackageSha256 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
 if ($localFields -notin @(0, 3)) { throw 'Local package mode requires path, version, and SHA-256 together' }
 $localMode = $localFields -eq 3
+$testAdapterRequested = -not [string]::IsNullOrWhiteSpace($TestStateDirectory) -or -not [string]::IsNullOrWhiteSpace($TestFailAfter)
+if ($testAdapterRequested) {
+    if (-not $localMode -or $env:FARPILOT_INSTALLER_TEST_MODE -cne '1') {
+        throw 'FarPilot installer test adapters require local-package mode and FARPILOT_INSTALLER_TEST_MODE=1'
+    }
+    if ([string]::IsNullOrWhiteSpace($TestStateDirectory) -or -not (Test-RegularDirectory $TestStateDirectory)) {
+        throw 'TestStateDirectory must be an existing regular directory'
+    }
+    $script:UseTestAdapters = $true
+    $script:TestStateRoot = Get-CanonicalPath $TestStateDirectory
+}
 $requestedVersion = Normalize-Version $Version
 
 if ($localMode) {
@@ -586,35 +713,31 @@ try {
     $currentState = Get-JunctionState -Path $CurrentDir -ReleasesDir $ReleasesDir -AllowLegacyBinary $false
     $binState = Get-JunctionState -Path $BinDir -ReleasesDir $ReleasesDir -AllowLegacyBinary $true
     $pathState = $null
+    $taskStateCaptured = $false
 
-    if (-not $SkipStartupTaskOperations) {
-        $taskState = Get-FarPilotStartupTaskState
-        Stop-FarPilotStartupTask $taskState
-    }
-    if (-not $SkipProcessManagement) { Stop-ManagedFarPilotProcesses $ReleasesDir }
-    if (-not $SkipPathMutation) { $pathState = Get-UserPathState }
+    $taskState = Get-FarPilotStartupTaskState
+    $taskStateCaptured = $true
+    Stop-FarPilotStartupTask $taskState
+    Stop-ManagedFarPilotProcesses $ReleasesDir
+    $pathState = Get-UserPathState
 
     $currentAttempted = $false
     $binAttempted = $false
     $pathAttempted = $false
-    $taskAttempted = $false
     try {
         $currentAttempted = $true
         $currentState = Set-ManagedJunction -Path $CurrentDir -Target $ReleaseDir -State $currentState -Root $Root
+        Invoke-TestFailure -Point 'AfterCurrentJunction'
         $binAttempted = $true
         $binState = Set-ManagedJunction -Path $BinDir -Target $ReleaseDir -State $binState -Root $Root
-        if (-not $SkipPathMutation) {
-            $pathAttempted = $true
-            Update-UserPath -Entry $ReleaseDir -ReleasesDir $ReleasesDir -Aliases @($CurrentDir, $BinDir)
-        }
-        if (-not $SkipStartupTaskOperations) {
-            $taskAttempted = $true
-            Set-FarPilotStartupTask -Executable (Join-Path $BinDir 'farpilot.exe') -PreviousState $taskState -CreateTask (-not $NoStartupTask)
-        }
+        Invoke-TestFailure -Point 'AfterBinJunction'
+        $pathAttempted = $true
+        Update-UserPath -Entry $ReleaseDir -ReleasesDir $ReleasesDir -Aliases @($CurrentDir, $BinDir)
+        Set-FarPilotStartupTask -Executable (Join-Path $BinDir 'farpilot.exe') -PreviousState $taskState -CreateTask (-not $NoStartupTask)
     } catch {
         $activationError = $_
         $rollbackErrors = @()
-        if ($taskAttempted) {
+        if ($taskStateCaptured) {
             try { Restore-FarPilotStartupTask -State $taskState } catch { $rollbackErrors += "startup task: $($_.Exception.Message)" }
         }
         if ($pathAttempted) {

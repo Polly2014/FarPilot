@@ -60,6 +60,14 @@ jobs:
       - name: Build Windows Stage 0 binary
         if: runner.os == 'Windows'
         run: cargo build --release -p farpilot-cli
+      - name: Install PSScriptAnalyzer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Install-Module PSScriptAnalyzer -RequiredVersion 1.23.0 -Scope CurrentUser -Force
+      - name: Lint Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Invoke-ScriptAnalyzer deploy/windows/install.ps1,deploy/windows/test-install.ps1 -ExcludeRule PSUseApprovedVerbs -EnableExit
       - name: Test Windows installer
         if: runner.os == 'Windows'
         shell: pwsh
