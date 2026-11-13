@@ -5,6 +5,7 @@ service="$root/deploy/gateway/farpilot-gateway.service"
 nginx="$root/deploy/gateway/farpilot.polly.wang.nginx"
 windows="$root/deploy/windows/install.ps1"
 runbook="$root/docs/stage0-runbook.md"
+gateway_installer="$root/deploy/gateway/install.sh"
 
 grep -q '127.0.0.1:8787' "$service"
 grep -q 'NoNewPrivileges=true' "$service"
@@ -22,6 +23,14 @@ grep -q 'Get-FileHash -Algorithm SHA256' "$windows"
 grep -q 'Get-AuthenticodeSignature' "$windows"
 grep -q 'RunLevel Limited' "$windows"
 grep -q 'FARPILOT_DATABASE_URL=sqlite:///var/lib/farpilot/farpilot.db' "$runbook"
+grep -q 'NoNewPrivileges=true' "$gateway_installer"
+grep -q 'ProtectSystem=strict' "$gateway_installer"
+grep -q 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6' "$gateway_installer"
+grep -q 'AllowTcpForwarding no' "$gateway_installer"
+grep -q 'AllowAgentForwarding no' "$gateway_installer"
+grep -q 'access_log off;' "$gateway_installer"
+grep -q 'error_log /dev/null crit;' "$gateway_installer"
+grep -q 'FARPILOT_CERTBOT_EMAIL=' "$gateway_installer"
 if grep -Eqi 'New-NetFirewallRule|netsh.*firewall|0\.0\.0\.0' "$windows"; then
   echo 'Windows installer must not create inbound network exposure' >&2
   exit 1
