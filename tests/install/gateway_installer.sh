@@ -152,6 +152,12 @@ for account_state in mismatch-group mismatch-home mismatch-shell; do
   [[ ! -e "$ROOT/usr/local/bin/farpilot" ]] || fail "$account_state mutated binary"
 done
 
+# Staged binary verification works when TMPDIR contains spaces.
+new_case tmp-spaces
+mkdir -p "$CASE/tmp with spaces"
+TMPDIR="$CASE/tmp with spaces" run_gateway --domain gateway.example.com --email operator@example.com >/dev/null
+assert_eq "$("$ROOT/usr/local/bin/farpilot" --version)" 'farpilot 9.8.7'
+
 # Existing install preserves mutable state byte-for-byte and no longer needs domain/email.
 CASE=$FIRST_CASE; ROOT=$FIRST_ROOT; DOWNLOADS=$FIRST_DOWNLOADS; LOG=$FIRST_LOG
 printf 'database-sentinel' > "$ROOT/var/lib/farpilot/farpilot.db"
@@ -160,6 +166,7 @@ mkdir -p "$ROOT/etc/ssh" "$ROOT/etc/letsencrypt/accounts" "$ROOT/etc/letsencrypt
 printf 'host-key' > "$ROOT/etc/ssh/ssh_host_ed25519_key"
 printf 'cert-account' > "$ROOT/etc/letsencrypt/accounts/sentinel"
 printf 'cert' > "$ROOT/etc/letsencrypt/live/gateway.example.com/fullchain.pem"
+printf 'key' > "$ROOT/etc/letsencrypt/live/gateway.example.com/privkey.pem"
 cp "$ROOT/etc/farpilot/gateway.env" "$CASE/env.before"
 : > "$LOG"
 run_gateway
@@ -168,6 +175,10 @@ assert_eq "$(cat "$ROOT/var/lib/farpilot/farpilot.db")" database-sentinel
 assert_eq "$(cat "$ROOT/var/lib/farpilot/authorized_keys")" authorized-sentinel
 assert_eq "$(cat "$ROOT/etc/ssh/ssh_host_ed25519_key")" host-key
 assert_eq "$(cat "$ROOT/etc/letsencrypt/accounts/sentinel")" cert-account
+assert_contains "$ROOT/etc/nginx/sites-available/gateway.example.com" 'listen 443 ssl;'
+assert_contains "$ROOT/etc/nginx/sites-available/gateway.example.com" 'ssl_certificate /etc/letsencrypt/live/gateway.example.com/fullchain.pem;'
+assert_contains "$ROOT/etc/nginx/sites-available/gateway.example.com" 'ssl_certificate_key /etc/letsencrypt/live/gateway.example.com/privkey.pem;'
+assert_contains "$ROOT/etc/nginx/sites-available/gateway.example.com" 'location = /ws/host'
 assert_not_contains "$LOG" 'certbot --nginx'
 
 # Strict test/root guards.
@@ -250,6 +261,15 @@ p=sys.argv[1]; d=json.load(open(p)); d={'schema_version':1,'version':'9.8.7','ta
 PY
 run_gateway --domain gateway.example.com --email operator@example.com >/dev/null
 
+# Incomplete existing TLS material fails before any mutation.
+new_case incomplete-cert
+mkdir -p "$ROOT/etc/letsencrypt/live/gateway.example.com"
+printf 'cert-only' > "$ROOT/etc/letsencrypt/live/gateway.example.com/fullchain.pem"
+if run_gateway --domain gateway.example.com --email operator@example.com >/dev/null 2>&1; then fail 'incomplete certificate pair succeeded'; fi
+assert_not_contains "$LOG" 'apt-get '
+assert_not_contains "$LOG" 'useradd '
+[[ ! -e "$ROOT/usr/local/bin/farpilot" ]] || fail 'incomplete certificate mutated binary'
+
 # Unsafe enabled-site ownership fails before any managed mutation.
 new_case unsafe-enabled-link
 mkdir -p "$ROOT/etc/systemd/system" "$ROOT/etc/ssh/sshd_config.d" "$ROOT/etc/nginx/sites-available" "$ROOT/etc/nginx/sites-enabled" "$ROOT/usr/local/bin"
@@ -299,6 +319,35 @@ new_case certbot-failure
 if run_gateway_failure FARPILOT_TEST_FAIL_CERTBOT=1 --domain gateway.example.com --email operator@example.com >/dev/null 2>&1; then fail 'Certbot failure succeeded'; fi
 [[ ! -e "$ROOT/etc/nginx/sites-available/gateway.example.com" ]] || fail 'Certbot failure left new Nginx config'
 assert_file "$ROOT/etc/farpilot/gateway.env"
+
+# Binary transaction failures restore prior configs, link, binary, and mutable state.
+for failure in BACKUP_COPY STAGE_INSTALL ACTIVATION_MOVE; do
+  new_case "binary-transaction-$failure"
+  run_gateway --domain gateway.example.com --email operator@example.com >/dev/null
+  printf 'db-sentinel' > "$ROOT/var/lib/farpilot/farpilot.db"
+  printf 'auth-sentinel' > "$ROOT/var/lib/farpilot/authorized_keys"
+  cp "$ROOT/etc/farpilot/gateway.env" "$CASE/env.before"
+  service_before=$(sha256_of "$ROOT/etc/systemd/system/farpilot-gateway.service")
+  sshd_before=$(sha256_of "$ROOT/etc/ssh/sshd_config.d/90-farpilot.conf")
+  nginx_before=$(sha256_of "$ROOT/etc/nginx/sites-available/gateway.example.com")
+  link_before=$(readlink "$ROOT/etc/nginx/sites-enabled/gateway.example.com")
+  make_binary 9.8.8 "$DOWNLOADS/farpilot-linux-x86_64"
+  write_manifest "$CASE/manifest.json" 9.8.8 linux-x86_64 "$DOWNLOADS/farpilot-linux-x86_64"
+  : > "$LOG"
+  if run_gateway_failure "FARPILOT_TEST_FAIL_${failure}=1" >/dev/null 2>&1; then fail "$failure failure succeeded"; fi
+  assert_eq "$("$ROOT/usr/local/bin/farpilot" --version)" 'farpilot 9.8.7'
+  assert_eq "$(sha256_of "$ROOT/etc/systemd/system/farpilot-gateway.service")" "$service_before"
+  assert_eq "$(sha256_of "$ROOT/etc/ssh/sshd_config.d/90-farpilot.conf")" "$sshd_before"
+  assert_eq "$(sha256_of "$ROOT/etc/nginx/sites-available/gateway.example.com")" "$nginx_before"
+  assert_eq "$(readlink "$ROOT/etc/nginx/sites-enabled/gateway.example.com")" "$link_before"
+  cmp "$CASE/env.before" "$ROOT/etc/farpilot/gateway.env"
+  assert_eq "$(cat "$ROOT/var/lib/farpilot/farpilot.db")" db-sentinel
+  assert_eq "$(cat "$ROOT/var/lib/farpilot/authorized_keys")" auth-sentinel
+  if find "$ROOT/usr/local/bin" -maxdepth 1 -name 'farpilot.staged.*' -print -quit | grep -q .; then fail "$failure left staged binary"; fi
+  [[ ! -e "$ROOT/var/lib/farpilot/farpilot.rollback" ]] || fail "$failure left rollback binary"
+  [[ ! -e "$ROOT/var/lib/farpilot/install.lock" ]] || fail "$failure left install lock"
+  assert_not_contains "$LOG" 'systemctl restart farpilot-gateway.service'
+done
 
 # Upgrade health failure restores old binary and attempts restart.
 new_case rollback

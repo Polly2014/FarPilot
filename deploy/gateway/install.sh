@@ -17,12 +17,21 @@ LOCK_DIR=
 LOCK_ACQUIRED=0
 STAGED_BINARY=
 CONFIG_TRANSACTION_ACTIVE=0
+BINARY_TRANSACTION_ACTIVE=0
+BINARY_PATH=
+ROLLBACK_PATH=
+OLD_BINARY=0
+BINARY_ACTIVATED=0
 
 log() { printf '  > %s\n' "$*"; }
 warn() { printf '  ! %s\n' "$*" >&2; }
 die() { printf '  x %s\n' "$*" >&2; exit 1; }
 cleanup() {
-  if ((CONFIG_TRANSACTION_ACTIVE)) && declare -F restore_configs >/dev/null 2>&1; then restore_configs >/dev/null 2>&1 || true; fi
+  if ((BINARY_TRANSACTION_ACTIVE)) && declare -F restore_binary >/dev/null 2>&1; then restore_binary >/dev/null 2>&1 || true; fi
+  if ((CONFIG_TRANSACTION_ACTIVE)) && declare -F restore_configs >/dev/null 2>&1; then
+    restore_configs >/dev/null 2>&1 || true
+    if declare -F reload_configs >/dev/null 2>&1; then reload_configs >/dev/null 2>&1 || true; fi
+  fi
   if [[ -n "$STAGED_BINARY" && -f "$STAGED_BINARY" && ! -L "$STAGED_BINARY" ]]; then rm -f -- "$STAGED_BINARY"; fi
   if ((LOCK_ACQUIRED)) && [[ -n "$LOCK_DIR" && -d "$LOCK_DIR" && ! -L "$LOCK_DIR" ]]; then rmdir "$LOCK_DIR" 2>/dev/null || true; fi
   if [[ -n "$TMP" && -d "$TMP" && ! -L "$TMP" ]]; then rm -rf -- "$TMP"; fi
@@ -181,6 +190,13 @@ fi
 [[ -n "$EMAIL" ]] || die '--email is required for first install'
 valid_domain "$DOMAIN" || die 'invalid Gateway domain'
 valid_email "$EMAIL" || die 'invalid Certbot email'
+cert_fullchain=$(root_path "/etc/letsencrypt/live/$DOMAIN/fullchain.pem")
+cert_privkey=$(root_path "/etc/letsencrypt/live/$DOMAIN/privkey.pem")
+CERT_PRESENT=0
+if [[ -e "$cert_fullchain" || -L "$cert_fullchain" || -e "$cert_privkey" || -L "$cert_privkey" ]]; then
+  [[ -f "$cert_fullchain" && -f "$cert_privkey" ]] || die 'existing TLS certificate pair is incomplete'
+  CERT_PRESENT=1
+fi
 
 if ((DRY_RUN)); then
   printf 'Dry run: Gateway %s (%s)\n' "$version" "$TARGET"
@@ -196,7 +212,7 @@ elif command -v shasum >/dev/null 2>&1; then actual_sha=$(shasum -a 256 "$downlo
 else actual_sha=$(openssl dgst -sha256 "$downloaded" | awk '{print tolower($NF)}'); fi
 [[ "$actual_sha" == "$expected_sha" ]] || die 'downloaded Gateway checksum did not match'
 chmod 0755 "$downloaded"
-reported=$($downloaded --version 2>/dev/null || true)
+reported=$("$downloaded" --version 2>/dev/null || true)
 [[ "$reported" == "farpilot $version" ]] || die 'downloaded Gateway version did not match manifest'
 
 # Command boundaries: production invokes real tools; tests record deterministic operations.
@@ -406,6 +422,13 @@ Match User farpilot
     GatewayPorts no
     PermitTTY yes
 EOF
+tls_directives=
+if ((CERT_PRESENT)); then
+  printf -v tls_directives '%s\n%s\n%s' \
+    '    listen 443 ssl;' \
+    "    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;" \
+    "    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;"
+fi
 cat > "$TMP/nginx" <<EOF
 limit_req_zone \$binary_remote_addr zone=farpilot_pair:10m rate=5r/m;
 limit_conn_zone \$binary_remote_addr zone=farpilot_conn:10m;
@@ -413,6 +436,7 @@ server {
     listen 80;
     listen [::]:80;
     server_name $DOMAIN;
+${tls_directives}
     client_max_body_size 16k;
     location /.well-known/acme-challenge/ { root /var/www/html; }
     location = /health/live { proxy_pass http://127.0.0.1:8787; proxy_set_header Host \$host; }
@@ -487,37 +511,83 @@ if ! reload_configs; then
   die 'Gateway configuration reload failed; previous configuration restored'
 fi
 
-cert_file=$(root_path "/etc/letsencrypt/live/$DOMAIN/fullchain.pem")
-if [[ ! -f "$cert_file" ]] && ! obtain_certificate; then
-  restore_configs || true
-  reload_configs >/dev/null 2>&1 || true
-  CONFIG_TRANSACTION_ACTIVE=0
-  die 'Certbot failed; previous Gateway configuration restored'
+if ((CERT_PRESENT == 0)); then
+  if ! obtain_certificate; then
+    restore_configs || true
+    reload_configs >/dev/null 2>&1 || true
+    CONFIG_TRANSACTION_ACTIVE=0
+    die 'Certbot failed; previous Gateway configuration restored'
+  fi
+  if [[ "$TEST_MODE" != 1 && ( ! -f "$cert_fullchain" || ! -f "$cert_privkey" ) ]]; then
+    restore_configs || true
+    reload_configs >/dev/null 2>&1 || true
+    CONFIG_TRANSACTION_ACTIVE=0
+    die 'Certbot completed without a complete certificate pair'
+  fi
+  if ! validate_configs || ! reload_configs; then
+    restore_configs || true
+    reload_configs >/dev/null 2>&1 || true
+    CONFIG_TRANSACTION_ACTIVE=0
+    die 'final TLS configuration validation failed; previous configuration restored'
+  fi
 fi
-CONFIG_TRANSACTION_ACTIVE=0
 
-old_binary=0; rollback="$state_dir/farpilot.rollback"
-require_safe_file "$rollback"
-if [[ -e "$binary" ]]; then
-  [[ -f "$binary" && ! -L "$binary" ]] || die 'existing FarPilot binary is unsafe'
-  cp -p "$binary" "$rollback"; chmod 0755 "$rollback"; old_binary=1
+BINARY_PATH="$binary"; ROLLBACK_PATH="$state_dir/farpilot.rollback"
+require_safe_file "$ROLLBACK_PATH"
+restore_binary() {
+  if ((BINARY_ACTIVATED)); then
+    if ((OLD_BINARY)) && [[ -f "$ROLLBACK_PATH" && ! -L "$ROLLBACK_PATH" ]]; then
+      local restore_stage="${BINARY_PATH}.restore.$$"
+      install -m 0755 "$ROLLBACK_PATH" "$restore_stage" || return 1
+      mv "$restore_stage" "$BINARY_PATH" || return 1
+    else
+      rm -f "$BINARY_PATH" || return 1
+    fi
+  fi
+  if [[ -n "$STAGED_BINARY" && -f "$STAGED_BINARY" && ! -L "$STAGED_BINARY" ]]; then rm -f "$STAGED_BINARY" || return 1; fi
+  if ((BINARY_ACTIVATED == 0)) && [[ -f "$ROLLBACK_PATH" && ! -L "$ROLLBACK_PATH" ]]; then rm -f "$ROLLBACK_PATH" || return 1; fi
+  BINARY_ACTIVATED=0
+  return 0
+}
+rollback_before_service() {
+  local message=$1 notes=
+  restore_binary || notes='; binary restore failed'
+  restore_configs || notes="$notes; configuration restore failed"
+  reload_configs >/dev/null 2>&1 || notes="$notes; configuration reload failed"
+  BINARY_TRANSACTION_ACTIVE=0; CONFIG_TRANSACTION_ACTIVE=0
+  die "$message$notes"
+}
+BINARY_TRANSACTION_ACTIVE=1
+if [[ -e "$BINARY_PATH" ]]; then
+  [[ -f "$BINARY_PATH" && ! -L "$BINARY_PATH" ]] || rollback_before_service 'existing FarPilot binary is unsafe'
+  if [[ "$TEST_MODE" == 1 && ${FARPILOT_TEST_FAIL_BACKUP_COPY:-0} == 1 ]]; then
+    rollback_before_service 'Gateway binary backup failed'
+  fi
+  if ! cp -p "$BINARY_PATH" "$ROLLBACK_PATH" || ! chmod 0755 "$ROLLBACK_PATH"; then
+    rollback_before_service 'Gateway binary backup failed'
+  fi
+  OLD_BINARY=1
 fi
-STAGED_BINARY="${binary}.staged.$$"
-[[ ! -e "$STAGED_BINARY" && ! -L "$STAGED_BINARY" ]] || die 'staged binary path already exists'
-install -m 0755 "$downloaded" "$STAGED_BINARY"
-mv "$STAGED_BINARY" "$binary"
-STAGED_BINARY=
+STAGED_BINARY="${BINARY_PATH}.staged.$$"
+[[ ! -e "$STAGED_BINARY" && ! -L "$STAGED_BINARY" ]] || rollback_before_service 'staged binary path already exists'
+if [[ "$TEST_MODE" == 1 && ${FARPILOT_TEST_FAIL_STAGE_INSTALL:-0} == 1 ]]; then
+  rollback_before_service 'Gateway binary staging failed'
+fi
+if ! install -m 0755 "$downloaded" "$STAGED_BINARY"; then rollback_before_service 'Gateway binary staging failed'; fi
+if [[ "$TEST_MODE" == 1 && ${FARPILOT_TEST_FAIL_ACTIVATION_MOVE:-0} == 1 ]]; then
+  rollback_before_service 'Gateway binary activation failed'
+fi
+if ! mv "$STAGED_BINARY" "$BINARY_PATH"; then rollback_before_service 'Gateway binary activation failed'; fi
+STAGED_BINARY=; BINARY_ACTIVATED=1
 if ! service_cmd enable "$SERVICE" || ! service_cmd restart "$SERVICE" || ! service_cmd is-active --quiet "$SERVICE" || ! health_check live "https://$DOMAIN/health/live" || ! health_check ready "https://$DOMAIN/health/ready"; then
-  original='Gateway readiness verification failed'
-  rollback_notes=
-  if ! restore_configs; then rollback_notes='; configuration restore failed'; fi
-  if ! reload_configs; then rollback_notes="$rollback_notes; configuration reload failed"; fi
-  if ((old_binary)); then
-    restore_stage="${binary}.restore.$$"
-    install -m 0755 "$rollback" "$restore_stage"
-    mv "$restore_stage" "$binary"
+  original='Gateway readiness verification failed'; rollback_notes=
+  restore_binary || rollback_notes='; binary restore failed'
+  restore_configs || rollback_notes="$rollback_notes; configuration restore failed"
+  reload_configs >/dev/null 2>&1 || rollback_notes="$rollback_notes; configuration reload failed"
+  if ((OLD_BINARY)); then
     ROLLBACK_PHASE=1
     if ! service_cmd restart "$SERVICE"; then
+      BINARY_TRANSACTION_ACTIVE=0; CONFIG_TRANSACTION_ACTIVE=0
       printf '  x %s; rollback restart failed%s\n' "$original" "$rollback_notes" >&2
       exit 1
     fi
@@ -525,9 +595,10 @@ if ! service_cmd enable "$SERVICE" || ! service_cmd restart "$SERVICE" || ! serv
   else
     service_cmd stop "$SERVICE" || true
     service_cmd disable "$SERVICE" || true
-    rm -f "$binary"
   fi
+  BINARY_TRANSACTION_ACTIVE=0; CONFIG_TRANSACTION_ACTIVE=0
   die "$original; previous binary and configuration restored$rollback_notes"
 fi
-if [[ -e "$rollback" ]]; then rm -f "$rollback" 2>/dev/null || warn 'installed successfully; rollback cleanup incomplete'; fi
+BINARY_TRANSACTION_ACTIVE=0; CONFIG_TRANSACTION_ACTIVE=0
+if [[ -e "$ROLLBACK_PATH" ]]; then rm -f "$ROLLBACK_PATH" 2>/dev/null || warn 'installed successfully; rollback cleanup incomplete'; fi
 log "FarPilot Gateway $version installed successfully for $DOMAIN"
