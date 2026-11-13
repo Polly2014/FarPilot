@@ -67,7 +67,15 @@ jobs:
       - name: Lint Windows installer
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Invoke-ScriptAnalyzer deploy/windows/install.ps1,deploy/windows/test-install.ps1 -ExcludeRule PSUseApprovedVerbs -EnableExit
+        run: |
+          $findings = @(
+            Invoke-ScriptAnalyzer -Path deploy/windows/install.ps1 -ExcludeRule PSUseApprovedVerbs
+            Invoke-ScriptAnalyzer -Path deploy/windows/test-install.ps1 -ExcludeRule PSUseApprovedVerbs
+          )
+          if ($findings.Count -ne 0) {
+            $findings | Format-Table -AutoSize | Out-String | Write-Host
+            throw "PSScriptAnalyzer found $($findings.Count) issue(s)"
+          }
       - name: Test Windows installer
         if: runner.os == 'Windows'
         shell: pwsh
