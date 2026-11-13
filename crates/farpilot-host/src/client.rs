@@ -3,7 +3,7 @@ use std::fmt;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
-use farpilot_core::frame::{ControlFrame, FrameCodec};
+use farpilot_core::frame::{ControlFrame, FrameCodec, SessionCloseReason};
 use farpilot_core::identity::HostIdentity;
 use farpilot_core::limits::MAX_CHANNELS_PER_HOST;
 use futures_util::{SinkExt, StreamExt};
@@ -16,7 +16,7 @@ use url::Url;
 use crate::herdr::HerdrConfig;
 use crate::pty::{PortablePtyFactory, PtyFactory};
 use crate::reconnect::ReconnectPolicy;
-use crate::session::{HostSessionRegistry, drive_session};
+use crate::session::{HostSessionError, HostSessionRegistry, drive_session};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransportSecurity {
@@ -181,91 +181,130 @@ impl AuthenticatedHostConnection {
         let registry = HostSessionRegistry::new(MAX_CHANNELS_PER_HOST);
         let (runtime_tx, mut runtime_rx) = tokio::sync::mpsc::channel(64);
         let (mut sink, mut stream) = self.socket.split();
-        loop {
-            tokio::select! {
-                incoming = stream.next() => {
-                    let Some(incoming) = incoming else { return Ok(()); };
-                    let message = incoming.map_err(|error| ConnectionError::transient(error.to_string()))?;
-                    match message {
-                        Message::Text(text) => {
-                            let frame = FrameCodec::decode_control(text.as_bytes())
-                                .map_err(|error| ConnectionError::permanent(error.to_string()))?;
-                            match frame {
-                                ControlFrame::SessionOpen { channel_id, cols, rows, .. } => {
-                                    match registry.open(channel_id).await {
-                                        Ok(handle) => {
-                                            send_sink_control(&mut sink, &ControlFrame::SessionOpened { channel_id }).await?;
-                                            let factory = factory.clone();
-                                            let registry = registry.clone();
-                                            let config = config.clone();
-                                            let runtime_tx = runtime_tx.clone();
-                                            tokio::spawn(async move {
-                                                let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(16);
-                                                let forward = tokio::spawn({
-                                                    let runtime_tx = runtime_tx.clone();
-                                                    async move {
-                                                        while let Some(bytes) = output_rx.recv().await {
-                                                            if runtime_tx.send(RuntimeEvent::Output(channel_id, bytes)).await.is_err() {
-                                                                break;
+        let mut session_tasks = tokio::task::JoinSet::new();
+        let result: Result<(), ConnectionError> = async {
+            loop {
+                tokio::select! {
+                    incoming = stream.next() => {
+                        let Some(incoming) = incoming else { return Ok(()); };
+                        let message = incoming.map_err(|error| ConnectionError::transient(error.to_string()))?;
+                        match message {
+                            Message::Text(text) => {
+                                let frame = FrameCodec::decode_control(text.as_bytes())
+                                    .map_err(|error| ConnectionError::permanent(error.to_string()))?;
+                                match frame {
+                                    ControlFrame::SessionOpen { channel_id, cols, rows, .. } => {
+                                        match registry.open(channel_id).await {
+                                            Ok(handle) => {
+                                                send_sink_control(&mut sink, &ControlFrame::SessionOpened { channel_id }).await?;
+                                                let factory = factory.clone();
+                                                let registry = registry.clone();
+                                                let config = config.clone();
+                                                let runtime_tx = runtime_tx.clone();
+                                                session_tasks.spawn(async move {
+                                                    let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(16);
+                                                    let forward = tokio::spawn({
+                                                        let runtime_tx = runtime_tx.clone();
+                                                        async move {
+                                                            while let Some(bytes) = output_rx.recv().await {
+                                                                if runtime_tx.send(RuntimeEvent::Output(channel_id, bytes)).await.is_err() {
+                                                                    break;
+                                                                }
                                                             }
                                                         }
-                                                    }
+                                                    });
+                                                    let result = drive_session(factory, config.launch(cols, rows), handle, output_tx).await;
+                                                    forward.abort();
+                                                    registry.finish(channel_id).await;
+                                                    let exit_code = result.as_ref().map(|_| 0).unwrap_or(1);
+                                                    let _ = runtime_tx.send(RuntimeEvent::Exited(channel_id, exit_code)).await;
                                                 });
-                                                let result = drive_session(factory, config.launch(cols, rows), handle, output_tx).await;
-                                                forward.abort();
-                                                registry.finish(channel_id).await;
-                                                let exit_code = result.as_ref().map(|_| 0).unwrap_or(1);
-                                                let _ = runtime_tx.send(RuntimeEvent::Exited(channel_id, exit_code)).await;
-                                            });
+                                            }
+                                            Err(_) => {
+                                                send_sink_control(&mut sink, &ControlFrame::SessionRefused {
+                                                    channel_id,
+                                                    reason: farpilot_core::frame::SessionRefusalReason::LimitExceeded,
+                                                }).await?;
+                                            }
                                         }
-                                        Err(_) => {
-                                            send_sink_control(&mut sink, &ControlFrame::SessionRefused {
+                                    }
+                                    ControlFrame::TerminalResize { channel_id, cols, rows } => {
+                                        if let Err(error) = registry.resize(channel_id, cols, rows).await
+                                            && let Some(reason) = input_failure_close_reason(error)
+                                        {
+                                            let _ = registry.close(channel_id, reason).await;
+                                            send_sink_control(&mut sink, &ControlFrame::SessionClose {
                                                 channel_id,
-                                                reason: farpilot_core::frame::SessionRefusalReason::LimitExceeded,
+                                                reason,
                                             }).await?;
                                         }
                                     }
+                                    ControlFrame::SessionClose { channel_id, reason } => {
+                                        let _ = registry.close(channel_id, reason).await;
+                                    }
+                                    ControlFrame::Ping { nonce } => {
+                                        send_sink_control(&mut sink, &ControlFrame::Pong { nonce }).await?;
+                                    }
+                                    _ => {}
                                 }
-                                ControlFrame::TerminalResize { channel_id, cols, rows } => {
-                                    let _ = registry.resize(channel_id, cols, rows).await;
-                                }
-                                ControlFrame::SessionClose { channel_id, reason } => {
-                                    let _ = registry.close(channel_id, reason).await;
-                                }
-                                ControlFrame::Ping { nonce } => {
-                                    send_sink_control(&mut sink, &ControlFrame::Pong { nonce }).await?;
-                                }
-                                _ => {}
                             }
+                            Message::Binary(bytes) => {
+                                let frame = FrameCodec::decode_terminal(&bytes)
+                                    .map_err(|error| ConnectionError::permanent(error.to_string()))?;
+                                if let Err(error) = registry.input(frame.channel_id, &frame.payload).await
+                                    && let Some(reason) = input_failure_close_reason(error)
+                                {
+                                    let _ = registry.close(frame.channel_id, reason).await;
+                                    send_sink_control(&mut sink, &ControlFrame::SessionClose {
+                                        channel_id: frame.channel_id,
+                                        reason,
+                                    }).await?;
+                                }
+                            }
+                            Message::Close(_) => return Ok(()),
+                            _ => {}
                         }
-                        Message::Binary(bytes) => {
-                            let frame = FrameCodec::decode_terminal(&bytes)
-                                .map_err(|error| ConnectionError::permanent(error.to_string()))?;
-                            let _ = registry.input(frame.channel_id, &frame.payload).await;
-                        }
-                        Message::Close(_) => return Ok(()),
-                        _ => {}
                     }
-                }
-                event = runtime_rx.recv() => {
-                    match event {
-                        Some(RuntimeEvent::Output(channel_id, bytes)) => {
-                            let encoded = FrameCodec::encode_terminal(channel_id, &bytes)
-                                .map_err(|error| ConnectionError::permanent(error.to_string()))?;
-                            sink.send(Message::Binary(encoded.into())).await
-                                .map_err(|error| ConnectionError::transient(error.to_string()))?;
+                    event = runtime_rx.recv() => {
+                        match event {
+                            Some(RuntimeEvent::Output(channel_id, bytes)) => {
+                                let encoded = FrameCodec::encode_terminal(channel_id, &bytes)
+                                    .map_err(|error| ConnectionError::permanent(error.to_string()))?;
+                                sink.send(Message::Binary(encoded.into())).await
+                                    .map_err(|error| ConnectionError::transient(error.to_string()))?;
+                            }
+                            Some(RuntimeEvent::Exited(channel_id, exit_code)) => {
+                                send_sink_control(&mut sink, &ControlFrame::SessionExited {
+                                    channel_id,
+                                    exit_code: Some(exit_code),
+                                }).await?;
+                            }
+                            None => return Ok(()),
                         }
-                        Some(RuntimeEvent::Exited(channel_id, exit_code)) => {
-                            send_sink_control(&mut sink, &ControlFrame::SessionExited {
-                                channel_id,
-                                exit_code: Some(exit_code),
-                            }).await?;
+                    }
+                    completed = session_tasks.join_next(), if !session_tasks.is_empty() => {
+                        if let Some(Err(error)) = completed {
+                            return Err(ConnectionError::transient(format!("Host session task failed: {error}")));
                         }
-                        None => return Ok(()),
                     }
                 }
             }
         }
+        .await;
+
+        drop(runtime_rx);
+        drop(runtime_tx);
+        registry
+            .close_all(SessionCloseReason::HostDisconnected)
+            .await;
+        while let Some(completed) = session_tasks.join_next().await {
+            if let Err(error) = completed {
+                return Err(ConnectionError::transient(format!(
+                    "Host session task failed during disconnect: {error}"
+                )));
+            }
+        }
+        result
     }
 
     pub async fn close(mut self) -> Result<(), ConnectionError> {
@@ -329,6 +368,13 @@ impl ConnectionError {
     }
 }
 
+fn input_failure_close_reason(error: HostSessionError) -> Option<SessionCloseReason> {
+    match error {
+        HostSessionError::QueueFull => Some(SessionCloseReason::SlowConsumer),
+        _ => None,
+    }
+}
+
 async fn send_sink_control<S>(sink: &mut S, frame: &ControlFrame) -> Result<(), ConnectionError>
 where
     S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
@@ -370,5 +416,24 @@ async fn receive_control(
         _ => Err(ConnectionError::permanent(
             "Gateway sent a non-control authentication frame",
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use farpilot_core::frame::SessionCloseReason;
+
+    use crate::session::HostSessionError;
+
+    #[test]
+    fn full_input_queue_closes_only_the_overloaded_session() {
+        assert_eq!(
+            super::input_failure_close_reason(HostSessionError::QueueFull),
+            Some(SessionCloseReason::SlowConsumer)
+        );
+        assert_eq!(
+            super::input_failure_close_reason(HostSessionError::UnknownChannel),
+            None
+        );
     }
 }

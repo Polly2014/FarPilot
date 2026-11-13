@@ -201,9 +201,7 @@ impl SessionBroker {
             channel
                 .pending_bytes
                 .fetch_sub(payload_len, Ordering::AcqRel);
-            let events = channel.events.clone();
-            let _ = events.try_send(AttachEvent::Closed(SessionCloseReason::SlowConsumer));
-            remove_channel(&mut state, frame.channel_id);
+            close_slow_consumer(&mut state, frame.channel_id)?;
             return Err(BrokerError::SlowConsumer);
         }
         if channel
@@ -214,9 +212,7 @@ impl SessionBroker {
             channel
                 .pending_bytes
                 .fetch_sub(payload_len, Ordering::AcqRel);
-            let events = channel.events.clone();
-            let _ = events.try_send(AttachEvent::Closed(SessionCloseReason::SlowConsumer));
-            remove_channel(&mut state, frame.channel_id);
+            close_slow_consumer(&mut state, frame.channel_id)?;
             return Err(BrokerError::SlowConsumer);
         }
         Ok(())
@@ -453,6 +449,26 @@ fn close_host_channels(state: &mut BrokerState, host_id: &str, reason: SessionCl
             let _ = channel.events.try_send(AttachEvent::Closed(reason));
         }
     }
+}
+
+fn close_slow_consumer(state: &mut BrokerState, channel_id: Uuid) -> Result<(), BrokerError> {
+    let (host_id, events) = state
+        .channels
+        .get(&channel_id)
+        .map(|channel| (channel.host_id.clone(), channel.events.clone()))
+        .ok_or(BrokerError::UnknownChannel)?;
+    let send_result = state
+        .hosts
+        .get(&host_id)
+        .ok_or(BrokerError::HostOffline)?
+        .commands
+        .try_send(HostCommand::Control(ControlFrame::SessionClose {
+            channel_id,
+            reason: SessionCloseReason::SlowConsumer,
+        }));
+    let _ = events.try_send(AttachEvent::Closed(SessionCloseReason::SlowConsumer));
+    remove_channel(state, channel_id);
+    send_result.map_err(|_| BrokerError::HostBusy)
 }
 
 fn remove_channel(state: &mut BrokerState, channel_id: Uuid) {

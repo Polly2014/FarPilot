@@ -19,7 +19,7 @@ Never place real IPs, tokens, private keys, or company data in this repository.
 5. Run `sshd -t` and `nginx -t`, then use `certbot --nginx -d farpilot.polly.wang`.
 6. Reload Nginx and enable `farpilot-gateway.service`.
 7. Verify `/health/live` and `/health/ready` over HTTPS.
-8. Create a five-minute enrollment code with `farpilot gateway enrollment create`.
+8. Create a five-minute enrollment code against the deployed database with `sudo -u farpilot env FARPILOT_DATABASE_URL=sqlite:///var/lib/farpilot/farpilot.db /usr/local/bin/farpilot gateway enrollment create`.
 
 Rollback: stop FarPilot, restore previous binary/config, run `sshd -t`, then restart sshd and reload Nginx. Preserve SQLite and `authorized_keys` backups with mode 0600.
 
@@ -52,8 +52,8 @@ Rollback: revoke paired devices on Gateway, unregister the startup task, stop Fa
 
 ## Revocation drill
 
-1. Run `farpilot devices` on Gateway and verify device fingerprint.
-2. Run `farpilot revoke <device-id> --yes`.
+1. Run `sudo -u farpilot env FARPILOT_DATABASE_URL=sqlite:///var/lib/farpilot/farpilot.db /usr/local/bin/farpilot devices` on Gateway and verify the device fingerprint.
+2. Run `sudo -u farpilot env FARPILOT_DATABASE_URL=sqlite:///var/lib/farpilot/farpilot.db /usr/local/bin/farpilot revoke <device-id> --yes`.
 3. Confirm the active phone session closes and reconnection fails.
 4. Confirm an independently authorized Mac still connects.
 

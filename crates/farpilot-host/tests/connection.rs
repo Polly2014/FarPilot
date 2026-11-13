@@ -1,15 +1,23 @@
 use std::io;
 use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use bytes::Bytes;
 use farpilot_core::frame::{ControlFrame, FrameCodec};
 use farpilot_core::identity::HostIdentity;
+use farpilot_gateway::broker::AttachEvent;
 use farpilot_gateway::host_ws::{HostWsState, build_host_ws_router};
 use farpilot_gateway::store::GatewayStore;
 use farpilot_host::client::{ConnectionErrorKind, HostClient, TransportSecurity};
+use farpilot_host::herdr::{HerdrConfig, HerdrLaunch};
 use farpilot_host::identity_store::{FileIdentityStore, IdentityProtector};
+use farpilot_host::pty::{PtyFactory, PtySession};
 use farpilot_host::reconnect::ReconnectPolicy;
 use futures_util::{SinkExt, StreamExt};
 use tempfile::tempdir;
@@ -25,6 +33,48 @@ impl IdentityProtector for XorProtector {
 
     fn unprotect(&self, ciphertext: &[u8]) -> io::Result<Vec<u8>> {
         self.protect(ciphertext)
+    }
+}
+
+struct TrackingPty {
+    closed: AtomicBool,
+    read_wake: tokio::sync::Notify,
+    closed_notify: tokio::sync::Notify,
+}
+
+#[async_trait]
+impl PtySession for TrackingPty {
+    async fn write_input(&self, _bytes: &[u8]) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn read_output(&self, _maximum: usize) -> anyhow::Result<Bytes> {
+        self.read_wake.notified().await;
+        Ok(Bytes::new())
+    }
+
+    async fn resize(&self, _cols: u16, _rows: u16) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn close(&self) -> anyhow::Result<()> {
+        self.closed.store(true, Ordering::SeqCst);
+        self.read_wake.notify_waiters();
+        self.closed_notify.notify_waiters();
+        Ok(())
+    }
+}
+
+struct TrackingFactory {
+    pty: Arc<TrackingPty>,
+    spawned: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl PtyFactory for TrackingFactory {
+    async fn spawn_herdr(&self, _request: HerdrLaunch) -> anyhow::Result<Arc<dyn PtySession>> {
+        self.spawned.notify_waiters();
+        Ok(self.pty.clone())
     }
 }
 
@@ -219,6 +269,97 @@ async fn authenticated_replacement_closes_the_previous_connection() {
         .expect("superseded connection should close")
         .unwrap();
     second.close().await.unwrap();
+    server.abort();
+}
+
+#[tokio::test]
+async fn gateway_disconnect_closes_all_active_host_pty_sessions() {
+    let store = GatewayStore::connect("sqlite::memory:").await.unwrap();
+    let identity = HostIdentity::generate();
+    let secret = identity.to_secret_bytes();
+    let host = store
+        .enroll_host("Company DevBox", &identity.public_key().to_bytes())
+        .await
+        .unwrap();
+    let device = store
+        .add_device("Baoli MacBook", "ssh-ed25519 AAAATEST")
+        .await
+        .unwrap();
+    store.grant_device(&device.id, &host.id).await.unwrap();
+
+    let state = HostWsState::new(store);
+    let broker = state.broker();
+    let app = build_host_ws_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+    });
+    let url = format!("ws://{address}/ws/host");
+
+    let first = HostClient::new(
+        &url,
+        host.id.clone(),
+        HostIdentity::from_secret_bytes(&secret),
+        TransportSecurity::AllowInsecureLoopback,
+    )
+    .unwrap()
+    .connect_once()
+    .await
+    .unwrap();
+    let pty = Arc::new(TrackingPty {
+        closed: AtomicBool::new(false),
+        read_wake: tokio::sync::Notify::new(),
+        closed_notify: tokio::sync::Notify::new(),
+    });
+    let spawned = Arc::new(tokio::sync::Notify::new());
+    let factory: Arc<dyn PtyFactory> = Arc::new(TrackingFactory {
+        pty: pty.clone(),
+        spawned: spawned.clone(),
+    });
+    let config = HerdrConfig::new(PathBuf::from("herdr"), None).unwrap();
+    let first_runtime = tokio::spawn(first.run_with_factory(config, factory));
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !broker.is_host_online(&host.id).await {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("Host should register with the broker");
+    let spawned_session = spawned.notified();
+    let mut attach = broker.open(&device.id, &host.id, 80, 24).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(1), spawned_session)
+        .await
+        .expect("Host should spawn the PTY session");
+    assert_eq!(attach.recv().await, Some(AttachEvent::Opened));
+
+    let closed = pty.closed_notify.notified();
+    let replacement = HostClient::new(
+        &url,
+        host.id,
+        HostIdentity::from_secret_bytes(&secret),
+        TransportSecurity::AllowInsecureLoopback,
+    )
+    .unwrap()
+    .connect_once()
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), first_runtime)
+        .await
+        .expect("superseded Host runtime should stop")
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_millis(100), closed)
+        .await
+        .expect("disconnect must close the active PTY session");
+    assert!(pty.closed.load(Ordering::SeqCst));
+
+    replacement.close().await.unwrap();
     server.abort();
 }
 

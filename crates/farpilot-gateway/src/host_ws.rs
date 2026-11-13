@@ -19,7 +19,7 @@ use rand::rngs::OsRng;
 use tokio::sync::{Mutex, watch};
 use uuid::Uuid;
 
-use crate::broker::{HostCommand, SessionBroker};
+use crate::broker::{BrokerError, HostCommand, SessionBroker};
 use crate::store::GatewayStore;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -228,7 +228,11 @@ async fn handle_host(mut socket: WebSocket, state: HostWsState) {
                     }
                     Some(Ok(Message::Binary(bytes))) => {
                         let Ok(frame) = FrameCodec::decode_terminal(&bytes) else { break; };
-                        let _ = registered.send_terminal(frame).await;
+                        if let Err(error) = registered.send_terminal(frame).await
+                            && terminal_route_failure_is_fatal(&error)
+                        {
+                            break;
+                        }
                     }
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                     _ => {}
@@ -283,8 +287,27 @@ async fn remove_generation(state: &HostWsState, host_id: &str, generation: Uuid)
     }
 }
 
+fn terminal_route_failure_is_fatal(error: &BrokerError) -> bool {
+    matches!(error, BrokerError::HostBusy)
+}
+
 fn system_time_ms(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::broker::BrokerError;
+
+    #[test]
+    fn full_host_command_queue_is_fatal_but_closed_slow_channel_is_not() {
+        assert!(super::terminal_route_failure_is_fatal(
+            &BrokerError::HostBusy
+        ));
+        assert!(!super::terminal_route_failure_is_fatal(
+            &BrokerError::SlowConsumer
+        ));
+    }
 }

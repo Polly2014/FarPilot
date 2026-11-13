@@ -44,6 +44,20 @@ fn request(method: &str, uri: &str, body: Body) -> Request<Body> {
         .unwrap()
 }
 
+fn proxied_request(method: &str, uri: &str, client_ip: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("x-real-ip", client_ip)
+        .extension(ConnectInfo(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            50_000,
+        )))
+        .body(Body::empty())
+        .unwrap()
+}
+
 async fn response_json(response: axum::response::Response) -> Value {
     let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
     serde_json::from_slice(&bytes).unwrap()
@@ -262,6 +276,34 @@ async fn failed_pairing_lookups_are_rate_limited_per_address() {
         };
         assert_eq!(response.status(), expected);
     }
+}
+
+#[tokio::test]
+async fn trusted_proxy_clients_have_independent_rate_limit_buckets() {
+    let (app, _store, _authorized_keys) = test_app().await;
+
+    for attempt in 0..5 {
+        let response = app
+            .clone()
+            .oneshot(proxied_request(
+                "GET",
+                &format!("/pair/{}", URL_SAFE_NO_PAD.encode([attempt; 32])),
+                "198.51.100.10",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    let other_client = app
+        .oneshot(proxied_request(
+            "GET",
+            &format!("/pair/{}", URL_SAFE_NO_PAD.encode([99; 32])),
+            "198.51.100.11",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(other_client.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

@@ -90,14 +90,15 @@ impl PtySession for PortablePtySession {
         let writer = self.writer.clone();
         let child = self.child.clone();
         tokio::task::spawn_blocking(move || {
+            let kill_result = child
+                .lock()
+                .map_err(|_| anyhow::anyhow!("PTY child poisoned"))?
+                .kill();
             writer
                 .lock()
                 .map_err(|_| anyhow::anyhow!("PTY writer poisoned"))?
                 .take();
-            child
-                .lock()
-                .map_err(|_| anyhow::anyhow!("PTY child poisoned"))?
-                .kill()?;
+            kill_result?;
             Ok(())
         })
         .await?

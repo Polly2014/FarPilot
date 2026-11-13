@@ -6,7 +6,7 @@ use std::time::{Instant, SystemTime};
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -62,6 +62,17 @@ impl GatewayHttpState {
             .or_default()
             .push_back(Instant::now());
     }
+}
+
+fn client_address(peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
+    if !peer.ip().is_loopback() {
+        return peer.ip();
+    }
+    headers
+        .get("x-real-ip")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| peer.ip())
 }
 
 pub fn build_router(state: GatewayHttpState) -> Router {
@@ -133,10 +144,11 @@ async fn enroll_host(
 
 async fn pairing_page(
     State(state): State<GatewayHttpState>,
-    ConnectInfo(address): ConnectInfo<SocketAddr>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Path(secret): Path<String>,
 ) -> Response {
-    let address = address.ip();
+    let address = client_address(peer, &headers);
     if state.is_rate_limited(address) {
         return error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
     }
@@ -207,11 +219,12 @@ struct ClaimDeviceResponse {
 
 async fn claim_device(
     State(state): State<GatewayHttpState>,
-    ConnectInfo(address): ConnectInfo<SocketAddr>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Path(secret): Path<String>,
     payload: Result<Json<ClaimDeviceRequest>, JsonRejection>,
 ) -> Response {
-    let address = address.ip();
+    let address = client_address(peer, &headers);
     if state.is_rate_limited(address) {
         return error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
     }

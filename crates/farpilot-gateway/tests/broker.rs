@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use farpilot_core::frame::{ControlFrame, SessionCloseReason, TerminalFrame};
 use farpilot_core::limits::{MAX_CHANNELS_PER_HOST, MAX_PENDING_BYTES_PER_CHANNEL};
 use farpilot_gateway::broker::{AttachEvent, BrokerError, HostCommand, SessionBroker};
@@ -184,6 +186,59 @@ async fn slow_client_closes_only_its_channel() {
         Err(BrokerError::SlowConsumer)
     );
     assert!(broker.is_host_online(&host.id).await);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_millis(100), registered.recv())
+            .await
+            .expect("Host must receive a slow-consumer close"),
+        Some(HostCommand::Control(ControlFrame::SessionClose {
+            channel_id,
+            reason: SessionCloseReason::SlowConsumer,
+        }))
+    );
+
+    for _ in 0..4 {
+        assert!(matches!(
+            attach.recv().await,
+            Some(AttachEvent::Terminal(_))
+        ));
+    }
+    assert_eq!(
+        attach.recv().await,
+        Some(AttachEvent::Closed(SessionCloseReason::SlowConsumer))
+    );
+}
+
+#[tokio::test]
+async fn full_host_command_queue_still_removes_a_slow_channel() {
+    let (broker, host, device) = authorized_broker().await;
+    let registered = broker.register_host(&host.id).await;
+    let mut attach = broker.open(&device.id, &host.id, 80, 24).await.unwrap();
+    let channel_id = attach.channel_id();
+
+    for _ in 0..63 {
+        attach.send_terminal(b"queued input").await.unwrap();
+    }
+
+    let chunk = vec![b'x'; MAX_PENDING_BYTES_PER_CHANNEL / 4];
+    for _ in 0..4 {
+        registered
+            .send_terminal(TerminalFrame {
+                channel_id,
+                payload: chunk.clone().into(),
+            })
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        registered
+            .send_terminal(TerminalFrame {
+                channel_id,
+                payload: vec![b'y'; 1].into(),
+            })
+            .await,
+        Err(BrokerError::HostBusy)
+    );
+    assert_eq!(broker.counts().await, (1, 0));
 
     for _ in 0..4 {
         assert!(matches!(
