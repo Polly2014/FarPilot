@@ -35,14 +35,16 @@ jobs:
       - name: Test release tooling
         run: python3 -m unittest discover -s tests/release -p 'test_*.py' -v
       - name: Verify release workflow structure
-        run: bash tests/release/workflow_assets.sh
+        run: |
+          bash tests/release/workflow_assets.sh
+          bash tests/release/signpath_application_workflow.sh
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Lint shell installers
         run: |
           shellcheck install.sh deploy/gateway/install.sh \
             tests/install/install_sh.sh tests/install/gateway_installer.sh \
-            tests/release/workflow_assets.sh
+            tests/release/workflow_assets.sh tests/release/signpath_application_workflow.sh
 
   ssh-security:
     name: OpenSSH restriction integration
