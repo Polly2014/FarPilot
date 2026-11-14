@@ -315,7 +315,7 @@ csp_nonce
 initial_page_state
 ```
 
-The renderer uses distinct text/attribute-safe encoding and rejects output with any unresolved reserved placeholder.
+The renderer uses distinct text/attribute-safe encoding. Before substituting dynamic values, it validates the source template's token inventory: every allowlisted token appears exactly the required number of times and no unknown `{{FARPILOT_*}}` marker exists. Dynamic values are inserted in one pass and are never interpreted as template syntax, so user text that resembles a marker remains ordinary encoded text rather than causing a second substitution or false render failure.
 
 The template does not evaluate arbitrary expressions and does not receive a serialized application object.
 
@@ -449,7 +449,7 @@ Extend `crates/farpilot-gateway/tests/pairing_http.rs` to verify:
 7. rate-limited GET requests return themed `429` without token/Host disclosure;
 8. internal GET failure returns generic themed `500`;
 9. valid Claim behavior, key normalization, token consumption, and `authorized_keys` behavior remain unchanged;
-10. rendered pages contain no unresolved reserved placeholders;
+10. the source template has an exact allowlisted token inventory, while dynamic text resembling a token remains literal text after one-pass rendering;
 11. the body remains below a documented size ceiling.
 
 Nonce values differ per response, so generic-page equivalence tests compare normalized DOM markers and public copy rather than raw bytes.
