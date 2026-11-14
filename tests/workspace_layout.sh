@@ -70,6 +70,20 @@ else
     exit 1
   fi
 fi
+test -f "$uninstall_doc"
+grep -Fq 'rm "$HOME/.local/bin/farpilot"' "$uninstall_doc"
+grep -Fq 'systemctl stop farpilot-gateway.service' "$uninstall_doc"
+grep -Fq 'systemctl disable farpilot-gateway.service' "$uninstall_doc"
+grep -Fq 'sshd -t' "$uninstall_doc"
+grep -Fq 'nginx -t' "$uninstall_doc"
+grep -Fq -- '-Uninstall' "$uninstall_doc"
+grep -Fq -- '-PurgeState' "$uninstall_doc"
+grep -Fq 'SSH keys and profiles are preserved by default' "$uninstall_doc"
+grep -Fq 'Gateway environment, database, authorized keys, SSH host keys, and certificates are preserved by default' "$uninstall_doc"
+if grep -Eqi 'rm[[:space:]]+(-[^[:space:]]+[[:space:]]+)*[^\n]*\.ssh/\*|curl[^\n|]*\|[^\n]*(uninstall|purge)' "$uninstall_doc"; then
+  echo 'uninstall guide contains a broad SSH glob or remote destructive pipeline' >&2
+  exit 1
+fi
 grep -Fq 'SignPath is not approved' "$signing_policy"
 grep -Fq '`release-signing` Environment is not configured' "$signing_policy"
 grep -Fq 'no signing certificate is active' "$signing_policy"

@@ -91,6 +91,8 @@ fi
 
 Only after that inspection, and only when the pinned installer cannot run, may an operator stop the service, copy the inspected rollback binary into place, validate `sshd -t` and `nginx -t`, restart the service, and verify both HTTPS health endpoints. Use the actual reviewed domain in health commands. Never delete or overwrite SQLite, `authorized_keys`, SSH host keys, the environment file, or certificate state during recovery.
 
+Gateway decommissioning is a separate operation. Revoke devices first, then follow [the uninstall guide](uninstall.md); environment, database, authorized keys, SSH host keys, and certificates are preserved by default.
+
 ### Bootstrap installer endpoints
 
 Before announcing the first one-command release, deploy the reviewed Nginx site containing the exact `/install.sh`, `/install.ps1`, and `/latest.json` locations, run `nginx -t`, and reload Nginx. Do not advertise these commands until a stable GitHub Release contains all three assets.
@@ -142,7 +144,18 @@ Get-Command farpilot -All
 [Environment]::GetEnvironmentVariable('Path', 'User')
 ```
 
-Do not remove `%LOCALAPPDATA%\FarPilot\host-identity.json` or `host-config.json` during binary rollback. Identity removal is a separate destructive action that requires re-enrollment.
+Do not remove `%LOCALAPPDATA%\FarPilot\host-identity.json` or `host.json` during binary rollback. Identity removal is a separate destructive action that requires re-enrollment.
+
+### Windows uninstall
+
+Preview and run the transactional uninstall from a reviewed local copy of `install.ps1`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall -DryRun
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
+```
+
+Default uninstall removes managed executable state while preserving Host identity and configuration. Destructive state removal requires `-Uninstall -PurgeState` and the exact typed confirmation. See [the uninstall guide](uninstall.md) for custom legacy `InstallDir`, rollback/quarantine, and cross-platform removal procedures.
 
 ## Mac pairing
 

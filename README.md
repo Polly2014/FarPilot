@@ -127,8 +127,10 @@ SignPath readiness is in progress. FarPilot is preparing for public open-source 
 
 - [Code signing policy](docs/code-signing-policy.md)
 - [Privacy policy](docs/privacy-policy.md)
+- [Uninstall](docs/uninstall.md)
 - [Security](SECURITY.md)
-- Uninstall readiness: planned; current role-specific removal guidance remains in the Stage 0 runbook until the dedicated uninstall task lands.
+
+Windows now provides transactional `-Uninstall` and confirmed `-PurgeState` modes. The uninstall guide documents conservative removal for every role.
 
 FarPilot currently has one maintainer. Signing-related source, workflow, and release changes remain subject to automated security gates and explicit manual approval.
 

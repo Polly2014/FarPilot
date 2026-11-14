@@ -23,7 +23,7 @@ The Windows installer is current-user scoped. Releases live under `%LOCALAPPDATA
 
 SHA-256 is mandatory. An unsigned Stage 0 binary is accepted only when its required digest matches. If Authenticode is present, the installer accepts `Valid` and rejects invalid signature states. A later release may declare signatures mandatory.
 
-Host identity and configuration remain outside release directories and are never deleted during an upgrade.
+Host identity and configuration remain outside release directories and are never deleted during an upgrade. Default `-Uninstall` also preserves them; only `-Uninstall -PurgeState` after exact typed confirmation removes known identity/configuration files. Uninstall preflights managed trees, quarantines removals transactionally, and refuses external or reparse-point paths.
 
 ### Linux Gateway
 
