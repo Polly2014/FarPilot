@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FarPilot // Pair</title>
+  <style nonce="{{FARPILOT_NONCE}}">
+    body { margin: 0; background: #020504; color: #78ff87; font-family: ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <main id="pairing-shell"
+        data-claim-path="{{FARPILOT_CLAIM_PATH_ATTR}}"
+        data-expires-at-ms="{{FARPILOT_EXPIRES_ATTR}}">
+    <h1>{{FARPILOT_PAGE_STATE}}</h1>
+    <section id="connection-data">
+      <p id="host-value">{{FARPILOT_HOST_TEXT}}</p>
+      <p><span id="gateway-value">{{FARPILOT_GATEWAY_TEXT}}</span>:<span id="port-value">{{FARPILOT_PORT_TEXT}}</span></p>
+      <code id="fingerprint-value">{{FARPILOT_FINGERPRINT_TEXT}}</code>
+    </section>
+  </main>
+  <script nonce="{{FARPILOT_NONCE}}">'use strict';</script>
+</body>
+</html>

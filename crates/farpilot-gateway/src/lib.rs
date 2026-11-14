@@ -8,6 +8,7 @@ pub mod health;
 pub mod host_ws;
 pub mod local_attach;
 pub mod pairing_http;
+pub mod pairing_page;
 pub mod store;
 
 /// Reports that the crate scaffold is available.
