@@ -7,4 +7,7 @@
 *.db-wal
 __pycache__/
 *.py[cod]
+.farpilot-audit/
+public-readiness-private*.json
+gitleaks-private*.json
 .DS_Store
