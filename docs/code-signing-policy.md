@@ -1,6 +1,6 @@
 # FarPilot Code Signing Policy
 
-**Status:** SignPath readiness in progress. FarPilot has not yet been accepted by SignPath Foundation and no FarPilot certificate profile is active.
+**Status:** SignPath readiness in progress. SignPath is not approved, the protected `release-signing` Environment is not configured, no signing certificate is active, and no FarPilot certificate profile exists.
 
 Free code signing provided by SignPath.io, certificate by SignPath Foundation
 
@@ -48,9 +48,9 @@ These roles do not imply separation of duties. If SignPath Foundation requires a
 
 A future contributor does not automatically receive any signing role.
 
-## Compensating controls
+## Required future compensating controls
 
-The single-maintainer model is constrained by:
+Before production signing can be enabled, the single-maintainer model must be constrained by:
 
 - multi-factor authentication for GitHub and SignPath accounts;
 - a protected GitHub `release-signing` Environment with manual approval;
@@ -61,7 +61,7 @@ The single-maintainer model is constrained by:
 - explicit self-review of signing-policy, workflow, and release-configuration changes;
 - failure-closed verification of Authenticode status, certificate subject, Code Signing EKU, RFC3161 timestamp, binary version, and final SHA-256.
 
-Because Polly is currently the only maintainer, GitHub Environment self-review prevention cannot be enabled. This limitation is disclosed rather than represented as independent approval.
+None of these SignPath production controls is represented as active today. Because Polly is currently the only maintainer, GitHub Environment self-review prevention cannot be enabled when that Environment is eventually configured. This limitation is disclosed rather than represented as independent approval.
 
 ## Artifact integrity and publication
 

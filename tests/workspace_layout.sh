@@ -52,3 +52,16 @@ grep -Fq 'zero telemetry' "$privacy_policy"
 grep -Fq 'GitHub Security Advisories' "$security_policy"
 grep -Fq '* @Polly2014' "$codeowners"
 grep -Fq '/.github/workflows/ @Polly2014' "$codeowners"
+grep -Fq 'implemented on `main`' "$readme"
+grep -Fq 'short installer endpoints and first stable GitHub Release are not live' "$readme"
+grep -Fq 'SignPath readiness is in progress' "$readme"
+grep -Fq 'Uninstall readiness: planned' "$readme"
+grep -Fq 'planned readiness control' "$privacy_policy"
+grep -Fq 'current removal guidance remains manual' "$privacy_policy"
+grep -Fq 'SignPath is not approved' "$signing_policy"
+grep -Fq '`release-signing` Environment is not configured' "$signing_policy"
+grep -Fq 'no signing certificate is active' "$signing_policy"
+if grep -Fq '[Uninstall](docs/uninstall.md)' "$readme" || grep -Fq '[Uninstall](uninstall.md)' "$privacy_policy"; then
+  echo 'uninstall documentation must not be linked before Task 4 creates it' >&2
+  exit 1
+fi

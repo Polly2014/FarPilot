@@ -8,7 +8,7 @@ FarPilot securely connects standard SSH terminals to persistent Herdr sessions o
 
 The private Stage 0 deployment has passed its nine acceptance criteria on Windows, macOS, and iPhone. Protocol, Gateway, Host, pairing, revocation, restricted SSH attachment, deployment assets, and regression tests are implemented.
 
-One-command installers and the verified release workflow are implemented on the development branch, but the short endpoints below are **not live until the first stable GitHub Release is published and the reviewed Nginx routes are deployed**.
+One-command installers and the verified release workflow are implemented on `main`, but the short installer endpoints and first stable GitHub Release are not live until a signed Release is published and the reviewed Nginx routes are deployed.
 
 ## Architecture
 
@@ -123,12 +123,12 @@ Read [Installer security](docs/installer-security.md) for the trust boundary, ro
 
 ## Security and project policies
 
-FarPilot is preparing for public open-source review and SignPath Foundation code signing. The repository has not yet been accepted by SignPath, no certificate is active, and no signed stable Windows release has been published.
+SignPath readiness is in progress. FarPilot is preparing for public open-source review and SignPath Foundation code signing. The repository has not yet been accepted by SignPath, no certificate is active, and no signed stable Windows release has been published.
 
 - [Code signing policy](docs/code-signing-policy.md)
 - [Privacy policy](docs/privacy-policy.md)
-- [Uninstall](docs/uninstall.md) — planned guidance; added by the uninstall-readiness task before public conversion
 - [Security](SECURITY.md)
+- Uninstall readiness: planned; current role-specific removal guidance remains in the Stage 0 runbook until the dedicated uninstall task lands.
 
 FarPilot currently has one maintainer. Signing-related source, workflow, and release changes remain subject to automated security gates and explicit manual approval.
 

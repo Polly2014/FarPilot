@@ -53,7 +53,7 @@ Pairing-token paths suppress access/error URI logging. Ordinary infrastructure l
 
 Host private keys remain on the originating Windows Host. Client SSH private keys remain on the originating client. Removing or revoking a device does not cause FarPilot to receive its private key.
 
-Uninstall and purge behavior is documented in [Uninstall](uninstall.md). Default Windows uninstall preserves Host identity and configuration to avoid accidental loss; explicit purge is required to remove them.
+Automated Windows `-Uninstall` / `-PurgeState` behavior is a planned readiness control, not a current release capability. The current removal guidance remains manual in the Stage 0 runbook until the dedicated uninstall task lands; that task will preserve Host identity and configuration by default and require explicit confirmation before purging them.
 
 ## Security and disclosure
 
