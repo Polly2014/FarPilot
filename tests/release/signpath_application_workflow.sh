@@ -28,6 +28,22 @@ def steps_text(job)
   job.fetch("steps", []).map { |step| [step["name"], step["run"], step["uses"], step["with"], step["env"]].inspect }.join("\n")
 end
 
+def assert_dependency_policy_step(job)
+  steps = job.fetch("steps", [])
+  install_index = steps.index do |step|
+    step["uses"] == "taiki-e/install-action@v2" &&
+      step.dig("with", "tool") == "cargo-deny@0.20.2" &&
+      step.dig("with", "fallback") == "none"
+  end
+  run_index = steps.index do |step|
+    step["name"] == "Verify dependency policy" &&
+      step["run"].to_s.strip == "bash tests/security/dependency_policy.sh"
+  end
+  assert(!install_index.nil?, "quality gate must install pinned cargo-deny")
+  assert(!run_index.nil?, "quality gate must execute dependency policy script")
+  assert(install_index < run_index, "cargo-deny must be installed before dependency policy execution")
+end
+
 def validate_application(document)
   trigger = triggers(document)
   assert(trigger.is_a?(Hash), "trigger must be a mapping")
@@ -50,6 +66,7 @@ def validate_application(document)
 
   quality = jobs.fetch("quality")
   assert(quality["runs-on"] == "ubuntu-24.04", "quality runner must be Ubuntu")
+  assert_dependency_policy_step(quality)
   quality_text = steps_text(quality)
   [
     "cargo fmt --all -- --check",
@@ -59,11 +76,9 @@ def validate_application(document)
     "tests/install/install_sh.sh",
     "tests/install/gateway_installer.sh",
     "tests/security/sshd_restrictions.sh",
-    "tests/security/dependency_policy.sh",
     "tests/security/sshd_integration.sh",
     "tests/release/workflow_assets.sh",
     "tests/release/signpath_application_workflow.sh",
-    "cargo-deny-action",
     "shellcheck",
   ].each { |needle| assert(quality_text.include?(needle), "quality gate missing #{needle}") }
 
@@ -162,6 +177,7 @@ mutations = {
   "missing warning" => ->(doc) { doc["jobs"]["publish"]["steps"].each { |step| step["run"]&.gsub!("Do not install on production systems.", "") } },
   "extra installer" => ->(doc) { doc["jobs"]["publish"]["steps"] << {"run" => "cp install.sh release/install.sh"} },
   "missing quality" => ->(doc) { doc["jobs"]["windows"]["needs"] = nil },
+  "missing dependency policy run" => ->(doc) { doc["jobs"]["quality"]["steps"].reject! { |step| step["name"] == "Verify dependency policy" } },
   "missing verify tag" => ->(doc) { doc["jobs"]["publish"]["steps"].each { |step| step["run"]&.gsub!("--verify-tag", "") } },
   "target override" => ->(doc) { doc["jobs"]["publish"]["steps"].each { |step| step["run"]&.gsub!("--prerelease", "--prerelease --target $GITHUB_SHA") } },
   "missing ref creation" => ->(doc) { doc["jobs"]["publish"]["steps"].reject! { |step| step.to_s.include?("/git/refs") } },

@@ -27,6 +27,22 @@ def steps_text(job)
   job.fetch("steps", []).map { |step| [step["name"], step["run"], step["uses"], step["with"]].inspect }.join("\n")
 end
 
+def assert_dependency_policy_step(job, label)
+  steps = job.fetch("steps", [])
+  install_index = steps.index do |step|
+    step["uses"] == "taiki-e/install-action@v2" &&
+      step.dig("with", "tool") == "cargo-deny@0.20.2" &&
+      step.dig("with", "fallback") == "none"
+  end
+  run_index = steps.index do |step|
+    step["name"] == "Verify dependency policy" &&
+      step["run"].to_s.strip == "bash tests/security/dependency_policy.sh"
+  end
+  assert(!install_index.nil?, "#{label} must install pinned cargo-deny")
+  assert(!run_index.nil?, "#{label} must execute the dependency policy script")
+  assert(install_index < run_index, "#{label} must install cargo-deny before dependency policy execution")
+end
+
 def validate_release(document)
   triggers = trigger_map(document)
   assert(triggers.is_a?(Hash), "release triggers must be a mapping")
@@ -45,9 +61,7 @@ def validate_release(document)
   jobs = document.fetch("jobs")
   expected_jobs = %w[quality ssh-security installers build assemble publish]
   assert(jobs.keys.sort == expected_jobs.sort, "release jobs must be exactly #{expected_jobs.join(', ')}")
-  assert(steps_text(jobs.fetch("quality")).include?("cargo-deny-action"), "release quality gate must run cargo-deny")
-  release_steps = jobs.values.map { |job| steps_text(job) }.join("\n")
-  assert(release_steps.include?("tests/security/dependency_policy.sh"), "release workflow must lint the dependency policy script")
+  assert_dependency_policy_step(jobs.fetch("quality"), "release quality gate")
   jobs.each do |name, job|
     next if name == "publish"
     permissions = job["permissions"] || {}
@@ -105,14 +119,14 @@ end
 
 def validate_ci(document)
   assert(document.dig("permissions", "contents") == "read", "CI contents permission must remain read")
-  text = document.fetch("jobs").values.map { |job| steps_text(job) }.join("\n")
+  jobs = document.fetch("jobs")
+  assert_dependency_policy_step(jobs.fetch("quality"), "normal CI quality gate")
+  text = jobs.values.map { |job| steps_text(job) }.join("\n")
   [
     "unittest discover -s tests/release",
     "tests/release/workflow_assets.sh",
     "tests/install/install_sh.sh",
     "tests/install/gateway_installer.sh",
-    "tests/security/dependency_policy.sh",
-    "cargo-deny-action",
     "shellcheck",
     "PSScriptAnalyzer",
   ].each { |needle| assert(text.include?(needle), "CI is missing #{needle}") }
@@ -130,6 +144,7 @@ mutations = {
   "top-level write" => ->(doc) { doc["permissions"]["contents"] = "write" },
   "unguarded publish" => ->(doc) { doc["jobs"]["publish"]["if"] = "always()" },
   "missing installer" => ->(doc) { doc["jobs"]["assemble"]["steps"].reject! { |step| step.to_s.include?("install-gateway.sh") } },
+  "missing dependency policy run" => ->(doc) { doc["jobs"]["quality"]["steps"].reject! { |step| step["name"] == "Verify dependency policy" } },
   "manual publishing" => ->(doc) { doc["jobs"]["publish"]["if"] = "github.event_name == 'workflow_dispatch' && inputs.dry_run == false" },
 }
 mutations.each do |name, mutation|
@@ -143,5 +158,15 @@ mutations.each do |name, mutation|
   raise "workflow validator accepted unsafe mutation: #{name}"
 end
 
-puts "release workflow structure verified"
+ci_without_dependency_run = Marshal.load(Marshal.dump(ci))
+ci_without_dependency_run["jobs"]["quality"]["steps"].reject! do |step|
+  step["name"] == "Verify dependency policy"
+end
+begin
+  validate_ci(ci_without_dependency_run)
+rescue RuntimeError
+  puts "release workflow structure verified"
+  exit 0
+end
+raise "workflow validator accepted normal CI without dependency policy execution"
 RUBY
