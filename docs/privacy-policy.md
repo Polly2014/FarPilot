@@ -4,16 +4,16 @@
 
 ## Zero telemetry
 
-FarPilot uses a zero telemetry model. The FarPilot project does not collect or receive:
+FarPilot uses a zero telemetry model. FarPilot software sends no telemetry and does not transmit:
 
-- analytics or usage statistics;
+- project analytics or usage statistics;
 - crash reports;
-- installation or update counts;
+- custom installation or update events;
 - background-update checks;
 - self-hosted Gateway records;
 - terminal contents, prompts, repository contents, or environment values.
 
-FarPilot does not operate a project call-home service.
+FarPilot does not operate a project call-home service. GitHub may expose aggregate release-asset download counts to repository maintainers under GitHub's own policy, but the FarPilot installer sends no custom tracking data and the project receives no downloader identity from those counts.
 
 ## Expected network operations
 

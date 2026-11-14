@@ -19,6 +19,7 @@ signing_policy="$root/docs/code-signing-policy.md"
 privacy_policy="$root/docs/privacy-policy.md"
 security_policy="$root/SECURITY.md"
 codeowners="$root/.github/CODEOWNERS"
+uninstall_doc="$root/docs/uninstall.md"
 
 test -f "$security"
 test -f "$signing_policy"
@@ -37,7 +38,6 @@ grep -Fq 'GitHub Release' "$security"
 grep -Fq 'simultaneous compromise' "$security"
 grep -Fq '[Code signing policy](docs/code-signing-policy.md)' "$readme"
 grep -Fq '[Privacy policy](docs/privacy-policy.md)' "$readme"
-grep -Fq '[Uninstall](docs/uninstall.md)' "$readme"
 grep -Fq '[Security](SECURITY.md)' "$readme"
 grep -Fq 'Free code signing provided by SignPath.io, certificate by SignPath Foundation' "$signing_policy"
 grep -Fq 'farpilot-windows-x86_64.exe' "$signing_policy"
@@ -55,13 +55,26 @@ grep -Fq '/.github/workflows/ @Polly2014' "$codeowners"
 grep -Fq 'implemented on `main`' "$readme"
 grep -Fq 'short installer endpoints and first stable GitHub Release are not live' "$readme"
 grep -Fq 'SignPath readiness is in progress' "$readme"
-grep -Fq 'Uninstall readiness: planned' "$readme"
-grep -Fq 'planned readiness control' "$privacy_policy"
-grep -Fq 'current removal guidance remains manual' "$privacy_policy"
+if test -f "$uninstall_doc"; then
+  grep -Fq '[Uninstall](docs/uninstall.md)' "$readme"
+  if grep -Fq 'Uninstall readiness: planned' "$readme"; then
+    echo 'README still marks uninstall as planned after documentation landed' >&2
+    exit 1
+  fi
+else
+  grep -Fq 'Uninstall readiness: planned' "$readme"
+  grep -Fq 'planned readiness control' "$privacy_policy"
+  grep -Fq 'current removal guidance remains manual' "$privacy_policy"
+  if grep -Fq '[Uninstall](docs/uninstall.md)' "$readme" || grep -Fq '[Uninstall](uninstall.md)' "$privacy_policy"; then
+    echo 'uninstall documentation must not be linked before Task 4 creates it' >&2
+    exit 1
+  fi
+fi
 grep -Fq 'SignPath is not approved' "$signing_policy"
 grep -Fq '`release-signing` Environment is not configured' "$signing_policy"
 grep -Fq 'no signing certificate is active' "$signing_policy"
-if grep -Fq '[Uninstall](docs/uninstall.md)' "$readme" || grep -Fq '[Uninstall](uninstall.md)' "$privacy_policy"; then
-  echo 'uninstall documentation must not be linked before Task 4 creates it' >&2
-  exit 1
-fi
+grep -Fq 'Required future attribution after SignPath approval:' "$signing_policy"
+grep -Fq 'does not indicate current SignPath sponsorship or signing' "$signing_policy"
+grep -Fq 'FarPilot software sends no telemetry' "$privacy_policy"
+grep -Fq 'aggregate release-asset download counts' "$privacy_policy"
+grep -Fq 'no downloader identity' "$privacy_policy"

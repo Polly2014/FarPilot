@@ -2,7 +2,11 @@
 
 **Status:** SignPath readiness in progress. SignPath is not approved, the protected `release-signing` Environment is not configured, no signing certificate is active, and no FarPilot certificate profile exists.
 
-Free code signing provided by SignPath.io, certificate by SignPath Foundation
+**Required future attribution after SignPath approval:**
+
+> Free code signing provided by SignPath.io, certificate by SignPath Foundation
+
+This required policy text records the intended post-approval attribution and does not indicate current SignPath sponsorship or signing.
 
 ## Signed scope
 
