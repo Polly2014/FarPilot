@@ -6,8 +6,8 @@ use std::time::{Instant, SystemTime};
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode, header};
-use axum::response::{Html, IntoResponse, Response};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::authorized_keys::{AuthorizedDeviceKey, write_authorized_keys};
 use crate::config::GatewayConfig;
 use crate::health;
+use crate::pairing_page::{PairingPageContext, PairingPageState, render_pairing_page};
 use crate::store::{GatewayStore, StoreError};
 
 const MAX_REQUEST_BODY_BYTES: usize = 16 * 1024;
@@ -150,7 +151,7 @@ async fn pairing_page(
 ) -> Response {
     let address = client_address(peer, &headers);
     if state.is_rate_limited(address) {
-        return error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+        return browser_page(StatusCode::TOO_MANY_REQUESTS, PairingPageState::RateLimited);
     }
 
     let preview = match state
@@ -161,43 +162,87 @@ async fn pairing_page(
         Ok(Some(preview)) => preview,
         Ok(None) => {
             state.record_failure(address);
-            return error(StatusCode::NOT_FOUND, "pairing_not_found");
+            return browser_page(StatusCode::NOT_FOUND, PairingPageState::Invalid);
         }
-        Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
+        Err(_) => {
+            return browser_page(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                PairingPageState::InternalError,
+            );
+        }
     };
 
-    let host = escape_html(&preview.host_display_name);
-    let ssh_host = escape_html(&state.config.public_ssh_host);
-    let fingerprint = escape_html(&state.config.ssh_host_fingerprint);
-    let action = format!("/v1/pair/{}/claim", escape_html(&secret));
-    let html = format!(
-        r#"<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>Pair FarPilot device</title></head><body>
-<main><h1>Pair with {host}</h1>
-<p>SSH gateway: <code>{ssh_host}:{port}</code></p>
-<p>Verify host fingerprint: <code>{fingerprint}</code></p>
-<p><time data-expires-at-ms="{expires}">This pairing link expires shortly.</time></p>
-<form id="pair-form"><label>Device name <input id="device-name" maxlength="64" required></label>
-<label>SSH Ed25519 public key <textarea id="ssh-key" required></textarea></label>
-<button type="submit">Pair device</button></form><pre id="result"></pre></main>
-<script>
-document.getElementById('pair-form').addEventListener('submit', async (event) => {{
- event.preventDefault();
- const response = await fetch('{action}', {{method:'POST', headers:{{'content-type':'application/json'}},
- body: JSON.stringify({{device_name:document.getElementById('device-name').value, ssh_public_key:document.getElementById('ssh-key').value}})}});
- document.getElementById('result').textContent = await response.text();
-}});
-</script></body></html>"#,
-        port = state.config.public_ssh_port,
-        expires = preview.expires_at_ms,
-    );
-    (
+    let expires_at_ms = match u64::try_from(preview.expires_at_ms) {
+        Ok(expires_at_ms) => expires_at_ms,
+        Err(_) => {
+            return browser_page(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                PairingPageState::InternalError,
+            );
+        }
+    };
+
+    browser_page(
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-        Html(html),
+        PairingPageState::Ready(PairingPageContext {
+            host_display_name: preview.host_display_name,
+            gateway_host: state.config.public_ssh_host.clone(),
+            gateway_port: state.config.public_ssh_port,
+            ssh_host_fingerprint: state.config.ssh_host_fingerprint.clone(),
+            expires_at_ms,
+            claim_path: format!("/v1/pair/{secret}/claim"),
+        }),
     )
-        .into_response()
+}
+
+fn browser_page(status: StatusCode, state: PairingPageState) -> Response {
+    let rendered = match render_pairing_page(state) {
+        Ok(rendered) => rendered,
+        Err(_) => return browser_render_failure(),
+    };
+    let csp = match HeaderValue::from_str(&rendered.csp) {
+        Ok(csp) => csp,
+        Err(_) => return browser_render_failure(),
+    };
+    let mut response = (
+        status,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        rendered.body,
+    )
+        .into_response();
+    apply_browser_headers(response.headers_mut(), csp);
+    response
+}
+
+fn browser_render_failure() -> Response {
+    let mut response = (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        "Pairing page unavailable",
+    )
+        .into_response();
+    apply_browser_headers(
+        response.headers_mut(),
+        HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'; base-uri 'none'"),
+    );
+    response
+}
+
+fn apply_browser_headers(headers: &mut HeaderMap, csp: HeaderValue) {
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static("DENY"),
+    );
+    headers.insert(HeaderName::from_static("content-security-policy"), csp);
 }
 
 #[derive(Deserialize)]
@@ -370,11 +415,38 @@ fn read_ssh_string<'a>(blob: &'a [u8], offset: &mut usize) -> Option<&'a [u8]> {
     Some(value)
 }
 
-fn escape_html(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
+#[cfg(test)]
+mod browser_response_tests {
+    use axum::body::to_bytes;
+    use axum::http::header;
+
+    use super::{PairingPageState, StatusCode, browser_page, browser_render_failure};
+
+    #[tokio::test]
+    async fn internal_error_browser_page_is_generic_and_hardened() {
+        let response = browser_page(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            PairingPageState::InternalError,
+        );
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(response.headers()["referrer-policy"], "no-referrer");
+        let body = to_bytes(response.into_body(), 128 * 1024).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("SYSTEM ERROR"));
+        assert!(!body.contains("gateway.example.com"));
+    }
+
+    #[tokio::test]
+    async fn render_failure_fallback_has_no_sensitive_context() {
+        let response = browser_render_failure();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(&body[..], b"Pairing page unavailable");
+    }
 }

@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime};
 
 use axum::body::{Body, to_bytes};
 use axum::extract::connect_info::ConnectInfo;
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderMap, Request, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use farpilot_core::pairing::PairingToken;
@@ -61,6 +61,41 @@ fn proxied_request(method: &str, uri: &str, client_ip: &str) -> Request<Body> {
 async fn response_json(response: axum::response::Response) -> Value {
     let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+async fn response_text(response: axum::response::Response) -> String {
+    let bytes = to_bytes(response.into_body(), 128 * 1024).await.unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+fn assert_browser_security_headers(headers: &HeaderMap) -> String {
+    assert_eq!(headers[header::CONTENT_TYPE], "text/html; charset=utf-8");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(headers["referrer-policy"], "no-referrer");
+    assert_eq!(headers["x-content-type-options"], "nosniff");
+    assert_eq!(headers["x-frame-options"], "DENY");
+    let csp = headers["content-security-policy"].to_str().unwrap();
+    for directive in [
+        "default-src 'none'",
+        "connect-src 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+        "base-uri 'none'",
+    ] {
+        assert!(csp.contains(directive), "missing CSP directive {directive}");
+    }
+    let nonce = csp
+        .split("style-src 'nonce-")
+        .nth(1)
+        .and_then(|value| value.split('\'').next())
+        .expect("style nonce")
+        .to_owned();
+    assert!(csp.contains(&format!("script-src 'nonce-{nonce}'")));
+    nonce
+}
+
+fn normalize_nonce(body: &str, nonce: &str) -> String {
+    body.replace(nonce, "NORMALIZED_NONCE")
 }
 
 fn host_public_key_b64() -> String {
@@ -136,11 +171,17 @@ async fn valid_pairing_page_and_claim_normalize_the_ssh_key() {
         .await
         .unwrap();
     assert_eq!(page.status(), StatusCode::OK);
-    let page_body = to_bytes(page.into_body(), 64 * 1024).await.unwrap();
-    let page_body = String::from_utf8(page_body.to_vec()).unwrap();
+    let nonce = assert_browser_security_headers(page.headers());
+    let page_body = response_text(page).await;
+    assert_eq!(page_body.matches(&format!("nonce=\"{nonce}\"")).count(), 2);
+    assert!(page_body.contains("FARPILOT // SECURE RELAY"));
     assert!(page_body.contains("Company DevBox"));
     assert!(page_body.contains("gateway.example.com"));
+    assert!(page_body.contains("id=\"port-value\">22</span>"));
     assert!(page_body.contains("SHA256:gateway-test"));
+    assert!(page_body.contains("data-expires-at-ms=\""));
+    assert!(page_body.contains(&format!("/v1/pair/{}/claim", token.secret())));
+    assert!(!page_body.contains("{{FARPILOT_"));
 
     let payload = json!({
         "device_name": "Baoli iPhone",
@@ -156,6 +197,7 @@ async fn valid_pairing_page_and_claim_normalize_the_ssh_key() {
         .await
         .unwrap();
     assert_eq!(claim.status(), StatusCode::CREATED);
+    assert_eq!(claim.headers()[header::CONTENT_TYPE], "application/json");
     let claim = response_json(claim).await;
     assert_eq!(claim["host_id"], host.id);
     assert_eq!(claim["ssh_host"], "gateway.example.com");
@@ -186,27 +228,81 @@ async fn valid_pairing_page_and_claim_normalize_the_ssh_key() {
 }
 
 #[tokio::test]
-async fn invalid_expired_and_consumed_pairing_links_share_not_found() {
+async fn pairing_page_escapes_host_metadata_in_themed_html() {
+    let (app, store, _authorized_keys) = test_app().await;
+    let host = store
+        .enroll_host(
+            "<script>alert(1)</script> & \" onmouseover=\"steal()",
+            b"host-public-key",
+        )
+        .await
+        .unwrap();
+    let token = PairingToken::generate(&host.id, SystemTime::now(), Duration::from_secs(300));
+    store.insert_pairing_token(token.record()).await.unwrap();
+
+    let response = app
+        .oneshot(request(
+            "GET",
+            &format!("/pair/{}", token.secret()),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_browser_security_headers(response.headers());
+    let body = response_text(response).await;
+    assert!(body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    assert!(body.contains("&amp; &quot; onmouseover=&quot;steal()"));
+    assert!(!body.contains("<script>alert(1)</script>"));
+}
+
+#[tokio::test]
+async fn invalid_expired_and_consumed_pairing_links_share_generic_html() {
     let (app, store, _authorized_keys) = test_app().await;
     let host = store
         .enroll_host("Company DevBox", b"host-public-key")
         .await
         .unwrap();
+    let now = SystemTime::now();
     let expired = PairingToken::generate(
         &host.id,
-        SystemTime::now() - Duration::from_secs(600),
+        now - Duration::from_secs(600),
         Duration::from_secs(300),
     );
     store.insert_pairing_token(expired.record()).await.unwrap();
+    let consumed = PairingToken::generate(&host.id, now, Duration::from_secs(300));
+    store.insert_pairing_token(consumed.record()).await.unwrap();
+    store
+        .consume_pairing_token_and_add_device(
+            consumed.secret(),
+            "Consumed fixture",
+            "ssh-ed25519 AAAACONSUMED",
+            now,
+        )
+        .await
+        .unwrap();
 
-    for secret in ["unknown-token", expired.secret()] {
+    let mut normalized_body = None;
+    for secret in ["unknown-token", expired.secret(), consumed.secret()] {
         let response = app
             .clone()
             .oneshot(request("GET", &format!("/pair/{secret}"), Body::empty()))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        assert_eq!(response_json(response).await["error"], "pairing_not_found");
+        let nonce = assert_browser_security_headers(response.headers());
+        let body = response_text(response).await;
+        assert!(body.contains("SESSION INVALID"));
+        assert!(!body.contains("Company DevBox"));
+        assert!(!body.contains("gateway.example.com"));
+        assert!(!body.contains("SHA256:gateway-test"));
+        assert!(!body.contains(secret));
+        let body = normalize_nonce(&body, &nonce);
+        if let Some(expected) = &normalized_body {
+            assert_eq!(&body, expected);
+        } else {
+            normalized_body = Some(body);
+        }
     }
 }
 
@@ -275,6 +371,13 @@ async fn failed_pairing_lookups_are_rate_limited_per_address() {
             StatusCode::TOO_MANY_REQUESTS
         };
         assert_eq!(response.status(), expected);
+        if expected == StatusCode::TOO_MANY_REQUESTS {
+            assert_browser_security_headers(response.headers());
+            let body = response_text(response).await;
+            assert!(body.contains("TOO MANY ATTEMPTS"));
+            assert!(!body.contains("gateway.example.com"));
+            assert!(!body.contains("SHA256:gateway-test"));
+        }
     }
 }
 
