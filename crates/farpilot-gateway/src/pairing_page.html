@@ -205,6 +205,17 @@
       line-height: 1.45;
     }
 
+    .request-error {
+      margin: 7px 0 0;
+      padding: 9px 10px;
+      border: 1px solid var(--error);
+      background: rgba(68, 16, 10, 0.55);
+      color: #ffd2c9;
+      font-size: 0.76rem;
+      font-weight: 700;
+      line-height: 1.45;
+    }
+
     button {
       min-height: 44px;
       margin-top: 9px;
@@ -368,6 +379,7 @@
           <textarea id="ssh-key" name="ssh-key" required spellcheck="false" autocapitalize="off" autocomplete="off" aria-describedby="key-help key-error"></textarea>
           <p id="key-help" class="field-help">仅粘贴公钥。私钥始终保留在你的设备上。</p>
           <p id="key-error" class="field-error" hidden></p>
+          <p id="request-error" class="request-error" role="alert" hidden></p>
 
           <button id="submit-button" type="submit">[ AUTHORIZE DEVICE ]</button>
         </form>
@@ -409,6 +421,7 @@
       const keyInput = document.getElementById('ssh-key');
       const deviceError = document.getElementById('device-error');
       const keyError = document.getElementById('key-error');
+      const requestError = document.getElementById('request-error');
       const submitButton = document.getElementById('submit-button');
       const countdown = document.getElementById('countdown');
       const pageStatus = document.getElementById('page-status');
@@ -448,6 +461,7 @@
       }
 
       function renderTerminalError(status, message) {
+        clearRequestError();
         terminal = true;
         submitting = false;
         stopCountdown();
@@ -488,7 +502,19 @@
         pageStatus.textContent = `${status}。${message}`;
       }
 
+      function setRequestError(status, message) {
+        requestError.textContent = `${status} — ${message}`;
+        requestError.hidden = false;
+        pageStatus.textContent = `${status}。${message}`;
+      }
+
+      function clearRequestError() {
+        requestError.textContent = '';
+        requestError.hidden = true;
+      }
+
       function clearErrors() {
+        clearRequestError();
         for (const [input, output] of [[deviceInput, deviceError], [keyInput, keyError]]) {
           input.removeAttribute('aria-invalid');
           output.textContent = '';
@@ -561,6 +587,7 @@
       }
 
       function renderSuccess(value) {
+        clearRequestError();
         terminal = true;
         submitting = false;
         stopCountdown();
@@ -614,6 +641,7 @@
       async function submitPairing(event) {
         event.preventDefault();
         if (submitting || expired || terminal) return;
+        clearRequestError();
         if (Date.now() >= expiresAtMs) {
           expireSession();
           return;
@@ -674,7 +702,8 @@
           setUiState('error');
           setControlsDisabled(false);
           submitButton.textContent = '[ AUTHORIZE DEVICE ]';
-          pageStatus.textContent = 'NETWORK ERROR。网络连接失败，请检查连接后重试。';
+          setRequestError('NETWORK ERROR', '网络连接失败，请检查连接后重试。');
+          submitButton.focus();
         } finally {
           activeController = null;
         }

@@ -381,6 +381,26 @@ mod tests {
     }
 
     #[test]
+    fn template_has_visible_request_error_lifecycle() {
+        for required in [
+            "id=\"request-error\"",
+            "class=\"request-error\"",
+            "role=\"alert\"",
+            "const requestError = document.getElementById('request-error')",
+            "function setRequestError(",
+            "function clearRequestError(",
+            "setRequestError('NETWORK ERROR'",
+            "网络连接失败，请检查连接后重试。",
+        ] {
+            assert!(TEMPLATE.contains(required), "missing {required}");
+        }
+        assert!(
+            TEMPLATE.matches("clearRequestError();").count() >= 4,
+            "request errors must be cleared on validation, resubmit, success, and terminal transitions"
+        );
+    }
+
+    #[test]
     fn success_renderer_uses_only_allowlisted_connection_fields() {
         for required in [
             "ssh_host",
