@@ -56,12 +56,17 @@ def validate_release(document)
   expected_matrix = [
     ["ubuntu-24.04", "x86_64-unknown-linux-musl", "farpilot-linux-x86_64"],
     ["ubuntu-24.04-arm", "aarch64-unknown-linux-musl", "farpilot-linux-aarch64"],
-    ["macos-13", "x86_64-apple-darwin", "farpilot-macos-x86_64"],
-    ["macos-14", "aarch64-apple-darwin", "farpilot-macos-aarch64"],
+    ["macos-15-intel", "x86_64-apple-darwin", "farpilot-macos-x86_64"],
+    ["macos-15", "aarch64-apple-darwin", "farpilot-macos-aarch64"],
     ["windows-2025", "x86_64-pc-windows-msvc", "farpilot-windows-x86_64.exe"],
   ]
   actual_matrix = matrix.map { |entry| [entry["runner"], entry["target"], entry["asset"]] }
   assert(actual_matrix == expected_matrix, "five-platform build matrix does not match release contract")
+  installer_os = jobs.dig("installers", "strategy", "matrix", "os")
+  assert(installer_os == ["ubuntu-24.04", "macos-15", "windows-2025"], "installer matrix must use current hosted runners")
+  retired_macos = ["macos-13", "macos-14"]
+  configured_runners = actual_matrix.map(&:first) + installer_os
+  assert((configured_runners & retired_macos).empty?, "release workflow uses retired macOS runner labels")
   assert(jobs.dig("build", "runs-on") == "${{ matrix.runner }}", "build runner must come from matrix")
   assert(jobs.dig("build", "strategy", "fail-fast") == false, "build matrix must not fail fast")
   build_text = steps_text(jobs.fetch("build"))

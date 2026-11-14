@@ -73,7 +73,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14, windows-2025]
+        os: [ubuntu-24.04, macos-15, windows-2025]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -139,11 +139,11 @@ jobs:
             target: aarch64-unknown-linux-musl
             asset: farpilot-linux-aarch64
             binary: target/aarch64-unknown-linux-musl/release/farpilot
-          - runner: macos-13
+          - runner: macos-15-intel
             target: x86_64-apple-darwin
             asset: farpilot-macos-x86_64
             binary: target/x86_64-apple-darwin/release/farpilot
-          - runner: macos-14
+          - runner: macos-15
             target: aarch64-apple-darwin
             asset: farpilot-macos-aarch64
             binary: target/aarch64-apple-darwin/release/farpilot

@@ -1038,10 +1038,10 @@ strategy:
       - runner: ubuntu-24.04-arm
         target: aarch64-unknown-linux-musl
         asset: farpilot-linux-aarch64
-      - runner: macos-13
+      - runner: macos-15-intel
         target: x86_64-apple-darwin
         asset: farpilot-macos-x86_64
-      - runner: macos-14
+      - runner: macos-15
         target: aarch64-apple-darwin
         asset: farpilot-macos-aarch64
       - runner: windows-2025
