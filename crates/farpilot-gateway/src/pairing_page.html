@@ -229,6 +229,48 @@
 
     #countdown { color: var(--phosphor); font-weight: 800; }
 
+    #terminal-state {
+      padding: 8px 0 4px;
+      color: var(--body);
+      line-height: 1.65;
+    }
+
+    #terminal-state h2 {
+      margin: 18px 0 5px;
+      color: var(--heading);
+      overflow-wrap: anywhere;
+    }
+
+    .event-log {
+      margin: 0;
+      color: var(--phosphor);
+      font-size: 0.78rem;
+      white-space: pre-wrap;
+    }
+
+    .terminal-message,
+    .terminal-next-step,
+    .terminal-seal { font-size: 0.8rem; }
+
+    .terminal-seal { margin-top: 16px; color: var(--muted); }
+
+    .terminal-data {
+      margin: 15px 0;
+      padding: 13px;
+      border: 1px solid var(--panel-border);
+      background: var(--panel);
+    }
+
+    .terminal-data-row {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      gap: 14px;
+      margin: 4px 0;
+    }
+
+    .terminal-data-row strong { color: var(--phosphor); }
+    .terminal-data-row span { overflow-wrap: anywhere; user-select: text; }
+
     .generic-state {
       display: none;
       padding: 28px 0 12px;
@@ -292,6 +334,7 @@
 <body>
   <main id="pairing-shell"
         class="crt"
+        data-ui-state="ready"
         data-claim-path="{{FARPILOT_CLAIM_PATH_ATTR}}"
         data-expires-at-ms="{{FARPILOT_EXPIRES_ATTR}}">
     <div class="scanlines" aria-hidden="true"></div>
@@ -352,6 +395,301 @@
       <p id="page-status" class="sr-only" aria-live="polite"></p>
     </div>
   </main>
-  <script nonce="{{FARPILOT_NONCE}}">'use strict';</script>
+  <script nonce="{{FARPILOT_NONCE}}">
+    'use strict';
+
+    (() => {
+      if (document.documentElement.dataset.pageState !== 'READY') return;
+
+      const shell = document.getElementById('pairing-shell');
+      const readyState = document.getElementById('ready-state');
+      const terminalState = document.getElementById('terminal-state');
+      const form = document.getElementById('pair-form');
+      const deviceInput = document.getElementById('device-name');
+      const keyInput = document.getElementById('ssh-key');
+      const deviceError = document.getElementById('device-error');
+      const keyError = document.getElementById('key-error');
+      const submitButton = document.getElementById('submit-button');
+      const countdown = document.getElementById('countdown');
+      const pageStatus = document.getElementById('page-status');
+      const hostValue = document.getElementById('host-value');
+      const expiresAtMs = Number(shell.dataset.expiresAtMs);
+      let countdownTimer = null;
+      let activeController = null;
+      let submitting = false;
+      let expired = false;
+      let terminal = false;
+
+      function setUiState(state) {
+        shell.dataset.uiState = state;
+        pageStatus.textContent = state;
+      }
+
+      function setControlsDisabled(disabled) {
+        deviceInput.disabled = disabled;
+        keyInput.disabled = disabled;
+        submitButton.disabled = disabled;
+      }
+
+      function stopCountdown() {
+        if (countdownTimer !== null) {
+          clearInterval(countdownTimer);
+          countdownTimer = null;
+        }
+      }
+
+      function terminalHeading(status, symbol) {
+        const heading = document.createElement('h2');
+        const marker = document.createElement('span');
+        marker.className = 'status-symbol';
+        marker.textContent = `${symbol} `;
+        heading.append(marker, document.createTextNode(status));
+        return heading;
+      }
+
+      function renderTerminalError(status, message) {
+        terminal = true;
+        submitting = false;
+        stopCountdown();
+        if (activeController !== null) activeController.abort();
+        setControlsDisabled(true);
+        readyState.hidden = true;
+        terminalState.replaceChildren(
+          terminalHeading(status, '!'),
+          Object.assign(document.createElement('p'), {
+            className: 'terminal-message',
+            textContent: message
+          })
+        );
+        terminalState.hidden = false;
+        setUiState('terminal-error');
+        pageStatus.textContent = `${status}。${message}`;
+      }
+
+      function expireSession() {
+        if (expired || terminal) return;
+        expired = true;
+        renderTerminalError('SESSION EXPIRED', '配对链接已过期，请重新生成并扫描二维码。');
+      }
+
+      function updateCountdown() {
+        const remainingMs = Math.max(0, expiresAtMs - Date.now());
+        const totalSeconds = Math.ceil(remainingMs / 1000);
+        const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+        const seconds = String(totalSeconds % 60).padStart(2, '0');
+        countdown.textContent = `${minutes}:${seconds}`;
+        if (remainingMs <= 0) expireSession();
+      }
+
+      function setFieldError(input, output, status, message) {
+        input.setAttribute('aria-invalid', 'true');
+        output.textContent = `${status} — ${message}`;
+        output.hidden = false;
+        pageStatus.textContent = `${status}。${message}`;
+      }
+
+      function clearErrors() {
+        for (const [input, output] of [[deviceInput, deviceError], [keyInput, keyError]]) {
+          input.removeAttribute('aria-invalid');
+          output.textContent = '';
+          output.hidden = true;
+        }
+      }
+
+      function mapApiError(code) {
+        const errors = {
+          invalid_device_name: {
+            status: 'DEVICE NAME REJECTED',
+            message: '设备名称必须包含 1–64 个非控制字符。',
+            field: 'device'
+          },
+          invalid_ssh_public_key: {
+            status: 'SSH KEY REJECTED',
+            message: '请输入完整的 ssh-ed25519 公钥。',
+            field: 'key'
+          },
+          pairing_not_found: {
+            status: 'SESSION INVALID',
+            message: '此配对会话不可用，请重新生成并扫描二维码。',
+            terminal: true
+          },
+          device_revoked: {
+            status: 'DEVICE REVOKED',
+            message: '该设备密钥已被撤销，请使用新的 Ed25519 公钥。',
+            terminal: true
+          },
+          rate_limited: {
+            status: 'TOO MANY ATTEMPTS',
+            message: '请求过于频繁，请稍后重新生成配对链接。',
+            terminal: true
+          },
+          authorized_keys_update_failed: {
+            status: 'GATEWAY SYNC FAILED',
+            message: 'Gateway 未能完成授权同步，请重新生成配对链接。',
+            terminal: true
+          },
+          internal_error: {
+            status: 'SYSTEM ERROR',
+            message: 'Gateway 暂时无法完成请求，请稍后重试。',
+            terminal: true
+          }
+        };
+        return errors[code] || errors.internal_error;
+      }
+
+      function appendDataRow(container, label, value) {
+        const row = document.createElement('div');
+        row.className = 'terminal-data-row';
+        const name = document.createElement('strong');
+        name.textContent = label;
+        const content = document.createElement('span');
+        content.textContent = value;
+        row.append(name, content);
+        container.append(row);
+      }
+
+      function validClaimPath(value) {
+        return /^\/v1\/pair\/[A-Za-z0-9_-]+\/claim$/.test(value);
+      }
+
+      function validSuccessResponse(value) {
+        return value !== null && typeof value === 'object' &&
+          typeof value.ssh_host === 'string' && value.ssh_host.length > 0 &&
+          Number.isInteger(value.ssh_port) && value.ssh_port >= 1 && value.ssh_port <= 65535 &&
+          typeof value.ssh_username === 'string' && value.ssh_username.length > 0 &&
+          typeof value.ssh_host_fingerprint === 'string' && value.ssh_host_fingerprint.length > 0;
+      }
+
+      function renderSuccess(value) {
+        terminal = true;
+        submitting = false;
+        stopCountdown();
+        setControlsDisabled(true);
+        const log = document.createElement('pre');
+        log.className = 'event-log';
+        log.textContent = '> validating ed25519 key... OK\n' +
+          '> writing host grant... OK\n' +
+          '> syncing authorized_keys... OK\n' +
+          '> secure route ready... OK';
+        const heading = terminalHeading('PAIRING COMPLETE', '✓');
+        const message = document.createElement('p');
+        message.className = 'terminal-message';
+        message.textContent = `设备已获得 ${hostValue.textContent} 访问权限。`;
+        const data = document.createElement('div');
+        data.className = 'terminal-data';
+        appendDataRow(data, 'HOST', value.ssh_host);
+        appendDataRow(data, 'PORT', String(value.ssh_port));
+        appendDataRow(data, 'USER', value.ssh_username);
+        appendDataRow(data, 'VERIFY', value.ssh_host_fingerprint);
+        const nextStep = document.createElement('p');
+        nextStep.className = 'terminal-next-step';
+        nextStep.textContent = '下一步：在 Moshi 中保存 SSH Profile，并再次核对指纹后连接。';
+        const seal = document.createElement('p');
+        seal.className = 'terminal-seal';
+        seal.textContent = 'SESSION SEALED // TOKEN CONSUMED';
+        readyState.hidden = true;
+        terminalState.replaceChildren(log, heading, message, data, nextStep, seal);
+        terminalState.hidden = false;
+        setUiState('success');
+        pageStatus.textContent = 'PAIRING COMPLETE。设备授权成功。';
+      }
+
+      function validateFields() {
+        clearErrors();
+        const deviceName = deviceInput.value.trim();
+        const sshKey = keyInput.value.trim();
+        if (deviceName.length < 1 || deviceName.length > 64 || /[\u0000-\u001f\u007f-\u009f]/u.test(deviceName)) {
+          setFieldError(deviceInput, deviceError, 'INVALID DEVICE NAME', '仅支持 1–64 个非控制字符。');
+          deviceInput.focus();
+          return null;
+        }
+        if (!sshKey.startsWith('ssh-ed25519 ') || sshKey.slice('ssh-ed25519 '.length).trim().length === 0) {
+          setFieldError(keyInput, keyError, 'INVALID SSH KEY', '请输入完整的 ssh-ed25519 公钥。');
+          keyInput.focus();
+          return null;
+        }
+        return { deviceName, sshKey };
+      }
+
+      async function submitPairing(event) {
+        event.preventDefault();
+        if (submitting || expired || terminal) return;
+        if (Date.now() >= expiresAtMs) {
+          expireSession();
+          return;
+        }
+        const fields = validateFields();
+        if (fields === null) return;
+        submitting = true;
+        setUiState('submitting');
+        setControlsDisabled(true);
+        submitButton.textContent = '[ AUTHORIZING... ]';
+        activeController = new AbortController();
+        try {
+          const response = await fetch(shell.dataset.claimPath, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              device_name: fields.deviceName,
+              ssh_public_key: fields.sshKey
+            }),
+            signal: activeController.signal,
+            credentials: 'same-origin',
+            redirect: 'error',
+            referrerPolicy: 'no-referrer'
+          });
+          let payload = null;
+          try {
+            payload = await response.json();
+          } catch (_) {
+            payload = null;
+          }
+          if (expired || terminal) return;
+          if (response.status === 201 && validSuccessResponse(payload)) {
+            renderSuccess(payload);
+            return;
+          }
+          const code = payload !== null && typeof payload.error === 'string'
+            ? payload.error
+            : 'internal_error';
+          const mapped = mapApiError(code);
+          if (mapped.terminal) {
+            renderTerminalError(mapped.status, mapped.message);
+            return;
+          }
+          submitting = false;
+          setUiState('error');
+          setControlsDisabled(false);
+          submitButton.textContent = '[ AUTHORIZE DEVICE ]';
+          if (mapped.field === 'device') {
+            setFieldError(deviceInput, deviceError, mapped.status, mapped.message);
+            deviceInput.focus();
+          } else {
+            setFieldError(keyInput, keyError, mapped.status, mapped.message);
+            keyInput.focus();
+          }
+        } catch (error) {
+          if (expired || terminal || error.name === 'AbortError') return;
+          submitting = false;
+          setUiState('error');
+          setControlsDisabled(false);
+          submitButton.textContent = '[ AUTHORIZE DEVICE ]';
+          pageStatus.textContent = 'NETWORK ERROR。网络连接失败，请检查连接后重试。';
+        } finally {
+          activeController = null;
+        }
+      }
+
+      if (!Number.isFinite(expiresAtMs) || expiresAtMs <= 0 || !validClaimPath(shell.dataset.claimPath)) {
+        renderTerminalError('SYSTEM ERROR', '页面配置无效，请重新生成配对链接。');
+        return;
+      }
+
+      form.addEventListener('submit', submitPairing);
+      setUiState('ready');
+      updateCountdown();
+      if (!expired) countdownTimer = setInterval(updateCountdown, 1000);
+    })();
+  </script>
 </body>
 </html>

@@ -335,6 +335,67 @@ mod tests {
     }
 
     #[test]
+    fn template_contains_pairing_state_machine_contract() {
+        for required in [
+            "function setUiState(",
+            "function updateCountdown(",
+            "function expireSession(",
+            "function setFieldError(",
+            "function clearErrors(",
+            "function mapApiError(",
+            "function renderSuccess(",
+            "function renderTerminalError(",
+            "function validClaimPath(",
+            "async function submitPairing(",
+            "Date.now()",
+            "setInterval(updateCountdown, 1000)",
+            "new AbortController()",
+            "fetch(",
+            "response.status === 201",
+            "response.json()",
+            ".textContent",
+        ] {
+            assert!(TEMPLATE.contains(required), "missing {required}");
+        }
+        for required in [
+            "invalid_device_name",
+            "invalid_ssh_public_key",
+            "pairing_not_found",
+            "device_revoked",
+            "rate_limited",
+            "authorized_keys_update_failed",
+            "internal_error",
+            "DEVICE NAME REJECTED",
+            "SSH KEY REJECTED",
+            "SESSION INVALID",
+            "DEVICE REVOKED",
+            "TOO MANY ATTEMPTS",
+            "GATEWAY SYNC FAILED",
+            "SYSTEM ERROR",
+            "NETWORK ERROR",
+            "SESSION EXPIRED",
+            "PAIRING COMPLETE",
+        ] {
+            assert!(TEMPLATE.contains(required), "missing {required}");
+        }
+    }
+
+    #[test]
+    fn success_renderer_uses_only_allowlisted_connection_fields() {
+        for required in [
+            "ssh_host",
+            "ssh_port",
+            "ssh_username",
+            "ssh_host_fingerprint",
+        ] {
+            assert!(TEMPLATE.contains(required), "missing {required}");
+        }
+        for forbidden in ["device_id", "host_id"] {
+            assert!(!TEMPLATE.contains(forbidden), "forbidden {forbidden}");
+        }
+    }
+
+    #[test]
     fn rendered_ready_page_stays_below_size_ceiling() {
         let page = render_pairing_page(PairingPageState::Ready(context())).unwrap();
         assert!(
