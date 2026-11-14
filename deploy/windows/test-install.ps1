@@ -244,7 +244,7 @@ function Assert-PreMutationFailureState {
     Assert-Equal -Expected $ExpectedPathJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $Scenario) 'path.json') -Raw) -Message "$Label changed PATH"
     Assert-Equal -Expected $ExpectedTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $Scenario) 'task.json') -Raw) -Message "$Label changed task"
     Assert-Equal -Expected 'identity-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $root 'host-identity.json') -Raw).Trim() -Message "$Label changed identity"
-    Assert-Equal -Expected 'config-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $root 'host-config.json') -Raw).Trim() -Message "$Label changed config"
+    Assert-Equal -Expected 'config-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $root 'host.json') -Raw).Trim() -Message "$Label changed config"
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $root "releases\$RejectedVersion-x86_64-pc-windows-msvc"))) "$Label left a new release"
     $artifacts = @(Get-ChildItem -LiteralPath $root -Force -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.(staging|backup|legacy)\.' })
     Assert-Equal -Expected 0 -Actual $artifacts.Count -Message "$Label left managed artifacts"
@@ -309,10 +309,10 @@ try {
     New-Item -ItemType Directory -Force -Path $legacyBin | Out-Null
     Copy-Item -LiteralPath $packages['0.2.0'] -Destination (Join-Path $legacyBin 'farpilot.exe')
     'identity-sentinel' | Set-Content -LiteralPath (Join-Path $legacyRoot 'host-identity.json')
-    'config-sentinel' | Set-Content -LiteralPath (Join-Path $legacyRoot 'host-config.json')
+    'config-sentinel' | Set-Content -LiteralPath (Join-Path $legacyRoot 'host.json')
     Install-Fixture -Scenario $legacy -Package $packages['0.2.1'] -Version '0.2.1' | Out-Null
     Assert-Equal -Expected 'identity-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $legacyRoot 'host-identity.json') -Raw).Trim() -Message 'identity changed during migration'
-    Assert-Equal -Expected 'config-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $legacyRoot 'host-config.json') -Raw).Trim() -Message 'config changed during migration'
+    Assert-Equal -Expected 'config-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $legacyRoot 'host.json') -Raw).Trim() -Message 'config changed during migration'
     Assert-True (((Get-Item -LiteralPath $legacyBin -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) 'legacy bin was not converted to a managed junction'
 
     # Unmanaged nonempty bin directories are refused and preserved.
@@ -341,7 +341,7 @@ try {
         Install-Fixture -Scenario $dangling -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
         $danglingRoot = Join-Path $dangling 'FarPilot'
         'identity-sentinel' | Set-Content -LiteralPath (Join-Path $danglingRoot 'host-identity.json')
-        'config-sentinel' | Set-Content -LiteralPath (Join-Path $danglingRoot 'host-config.json')
+        'config-sentinel' | Set-Content -LiteralPath (Join-Path $danglingRoot 'host.json')
         $danglingTask = Get-TestState -LocalAppData $dangling -Name 'task'
         $danglingTask.Running = $true
         Write-TestStateFile -LocalAppData $dangling -Name 'task' -Value $danglingTask
@@ -366,7 +366,7 @@ try {
     Install-Fixture -Scenario $incompleteAlias -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
     $incompleteRoot = Join-Path $incompleteAlias 'FarPilot'
     'identity-sentinel' | Set-Content -LiteralPath (Join-Path $incompleteRoot 'host-identity.json')
-    'config-sentinel' | Set-Content -LiteralPath (Join-Path $incompleteRoot 'host-config.json')
+    'config-sentinel' | Set-Content -LiteralPath (Join-Path $incompleteRoot 'host.json')
     $incompleteTask = Get-TestState -LocalAppData $incompleteAlias -Name 'task'
     $incompleteTask.Running = $true
     Write-TestStateFile -LocalAppData $incompleteAlias -Name 'task' -Value $incompleteTask
@@ -481,7 +481,7 @@ try {
         Install-Fixture -Scenario $transaction -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
         $transactionRoot = Join-Path $transaction 'FarPilot'
         'identity-sentinel' | Set-Content -LiteralPath (Join-Path $transactionRoot 'host-identity.json')
-        'config-sentinel' | Set-Content -LiteralPath (Join-Path $transactionRoot 'host-config.json')
+        'config-sentinel' | Set-Content -LiteralPath (Join-Path $transactionRoot 'host.json')
         $priorTask = Get-TestState -LocalAppData $transaction -Name 'task'
         $priorTask.Running = $true
         Write-TestStateFile -LocalAppData $transaction -Name 'task' -Value $priorTask
@@ -497,7 +497,7 @@ try {
         Assert-Equal -Expected $priorTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $transaction) 'task.json') -Raw) -Message "$failurePoint did not restore task"
         Assert-True ([bool](Get-TestState -LocalAppData $transaction -Name 'task').Running) "$failurePoint did not keep the prior Host task running"
         Assert-Equal -Expected 'identity-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $transactionRoot 'host-identity.json') -Raw).Trim() -Message "$failurePoint changed identity"
-        Assert-Equal -Expected 'config-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $transactionRoot 'host-config.json') -Raw).Trim() -Message "$failurePoint changed config"
+        Assert-Equal -Expected 'config-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $transactionRoot 'host.json') -Raw).Trim() -Message "$failurePoint changed config"
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $transactionRoot 'releases\0.2.1-x86_64-pc-windows-msvc'))) "$failurePoint left new release"
         $transactionArtifacts = @(Get-ChildItem -LiteralPath $transactionRoot -Force -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.(staging|backup|legacy)\.' })
         Assert-Equal -Expected 0 -Actual $transactionArtifacts.Count -Message "$failurePoint left transaction artifacts"
@@ -510,7 +510,7 @@ try {
     New-Item -ItemType Directory -Force -Path $cleanupBin | Out-Null
     Copy-Item -LiteralPath $packages['0.2.0'] -Destination (Join-Path $cleanupBin 'farpilot.exe')
     'identity-sentinel' | Set-Content -LiteralPath (Join-Path $cleanupRoot 'host-identity.json')
-    'config-sentinel' | Set-Content -LiteralPath (Join-Path $cleanupRoot 'host-config.json')
+    'config-sentinel' | Set-Content -LiteralPath (Join-Path $cleanupRoot 'host.json')
     $cleanupResult = Invoke-InstallerProcess -LocalAppData $cleanup -PackagePath $packages['0.2.1'] -Version '0.2.1' -Sha256 (Get-FileHash -Algorithm SHA256 $packages['0.2.1']).Hash -FailAfter 'DuringCleanup'
     Assert-Equal -Expected 0 -Actual $cleanupResult.ExitCode -Message "cleanup failure rolled back healthy activation: $($cleanupResult.Output)"
     Assert-True ($cleanupResult.Output -match 'installed successfully; cleanup incomplete') 'cleanup failure warning was not reported'
@@ -521,7 +521,7 @@ try {
     $cleanupCanonicalRelease = [IO.Path]::GetFullPath($cleanupRelease).TrimEnd('\')
     Assert-True ([string]$cleanupPath.Value -like "$cleanupCanonicalRelease*") 'cleanup failure did not commit PATH'
     Assert-Equal -Expected 'identity-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $cleanupRoot 'host-identity.json') -Raw).Trim() -Message 'cleanup failure changed identity'
-    Assert-Equal -Expected 'config-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $cleanupRoot 'host-config.json') -Raw).Trim() -Message 'cleanup failure changed config'
+    Assert-Equal -Expected 'config-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $cleanupRoot 'host.json') -Raw).Trim() -Message 'cleanup failure changed config'
     $cleanupBackups = @(Get-ChildItem -LiteralPath $cleanupRoot -Directory -Force | Where-Object { $_.Name -like 'bin.legacy.*' })
     Assert-Equal -Expected 1 -Actual $cleanupBackups.Count -Message 'cleanup failure did not leave the safe legacy backup for retry'
 
@@ -530,7 +530,7 @@ try {
     Install-Fixture -Scenario $uninstall -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
     $uninstallRoot = Join-Path $uninstall 'FarPilot'
     'identity-sentinel' | Set-Content -LiteralPath (Join-Path $uninstallRoot 'host-identity.json')
-    'config-sentinel' | Set-Content -LiteralPath (Join-Path $uninstallRoot 'host-config.json')
+    'config-sentinel' | Set-Content -LiteralPath (Join-Path $uninstallRoot 'host.json')
     'unrelated-sentinel' | Set-Content -LiteralPath (Join-Path $uninstallRoot 'user-notes.txt')
     Write-TestStateFile -LocalAppData $uninstall -Name 'processes' -Value @(
         [PSCustomObject]@{ Id = 201; Name = 'farpilot.exe'; ExecutablePath = "$uninstallRoot\releases\0.2.0-x86_64-pc-windows-msvc\farpilot.exe"; Stopped = $false },
@@ -548,7 +548,7 @@ try {
     Assert-Equal -Expected 0 -Actual $remainingReleases.Count -Message 'default uninstall left release files'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $uninstallRoot 'install.lock'))) 'default uninstall left install lock'
     Assert-Equal -Expected 'identity-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $uninstallRoot 'host-identity.json') -Raw).Trim() -Message 'default uninstall removed identity'
-    Assert-Equal -Expected 'config-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $uninstallRoot 'host-config.json') -Raw).Trim() -Message 'default uninstall removed config'
+    Assert-Equal -Expected 'config-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $uninstallRoot 'host.json') -Raw).Trim() -Message 'default uninstall removed config'
     Assert-Equal -Expected 'unrelated-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $uninstallRoot 'user-notes.txt') -Raw).Trim() -Message 'default uninstall removed unrelated state'
     $uninstallProcesses = @(Get-TestState -LocalAppData $uninstall -Name 'processes')
     Assert-True ([bool]$uninstallProcesses[0].Stopped) 'default uninstall did not stop managed process'
@@ -568,20 +568,20 @@ try {
     Install-Fixture -Scenario $upgradeUninstall -Package $packages['0.2.1'] -Version '0.2.1' | Out-Null
     $upgradeRoot = Join-Path $upgradeUninstall 'FarPilot'
     'identity-upgrade' | Set-Content -LiteralPath (Join-Path $upgradeRoot 'host-identity.json')
-    'config-upgrade' | Set-Content -LiteralPath (Join-Path $upgradeRoot 'host-config.json')
+    'config-upgrade' | Set-Content -LiteralPath (Join-Path $upgradeRoot 'host.json')
     $upgradeUninstallResult = Invoke-UninstallerProcess -LocalAppData $upgradeUninstall
     Assert-Equal -Expected 0 -Actual $upgradeUninstallResult.ExitCode -Message "upgrade uninstall failed: $($upgradeUninstallResult.Output)"
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $upgradeRoot 'current'))) 'upgrade uninstall left current'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $upgradeRoot 'bin'))) 'upgrade uninstall left bin'
     Assert-Equal -Expected 'identity-upgrade' -Actual (Get-Content -LiteralPath (Join-Path $upgradeRoot 'host-identity.json') -Raw).Trim() -Message 'upgrade uninstall removed identity'
-    Assert-Equal -Expected 'config-upgrade' -Actual (Get-Content -LiteralPath (Join-Path $upgradeRoot 'host-config.json') -Raw).Trim() -Message 'upgrade uninstall removed config'
+    Assert-Equal -Expected 'config-upgrade' -Actual (Get-Content -LiteralPath (Join-Path $upgradeRoot 'host.json') -Raw).Trim() -Message 'upgrade uninstall removed config'
 
     # Purge mode validation fails before mutation when Uninstall or confirmation is missing.
     $purgeValidation = Initialize-ScenarioRoot 'purge-validation'
     Install-Fixture -Scenario $purgeValidation -Package $packages['0.2.0'] -Version '0.2.0' | Out-Null
     $purgeRoot = Join-Path $purgeValidation 'FarPilot'
     'identity-purge' | Set-Content -LiteralPath (Join-Path $purgeRoot 'host-identity.json')
-    'config-purge' | Set-Content -LiteralPath (Join-Path $purgeRoot 'host-config.json')
+    'config-purge' | Set-Content -LiteralPath (Join-Path $purgeRoot 'host.json')
     $purgeWithoutUninstall = Invoke-RawInstallerProcess -LocalAppData $purgeValidation -InstallerArguments @('-PurgeState', '-TestStateDirectory', (Initialize-TestState $purgeValidation))
     Assert-True ($purgeWithoutUninstall.ExitCode -ne 0) 'PurgeState without Uninstall unexpectedly succeeded'
     Assert-True (Test-Path -LiteralPath (Join-Path $purgeRoot 'current')) 'PurgeState without Uninstall mutated install'
@@ -590,27 +590,34 @@ try {
     Assert-Equal -Expected 'identity-purge' -Actual (Get-Content -LiteralPath (Join-Path $purgeRoot 'host-identity.json') -Raw).Trim() -Message 'unconfirmed purge removed identity'
     $unguardedConfirmation = Invoke-UnguardedPurgeConfirmation -LocalAppData $purgeValidation
     Assert-True ($unguardedConfirmation.ExitCode -ne 0) 'ConfirmPurge outside guarded test mode unexpectedly succeeded'
-    Assert-True (Test-Path -LiteralPath (Join-Path $purgeRoot 'host-config.json')) 'unguarded ConfirmPurge removed state'
+    Assert-True (Test-Path -LiteralPath (Join-Path $purgeRoot 'host.json')) 'unguarded ConfirmPurge removed state'
 
     # Guarded confirmed purge removes only known state and preserves unknown files for review.
     $confirmedPurge = Initialize-ScenarioRoot 'purge-confirmed'
     Install-Fixture -Scenario $confirmedPurge -Package $packages['0.2.0'] -Version '0.2.0' | Out-Null
     $confirmedRoot = Join-Path $confirmedPurge 'FarPilot'
     'identity-confirmed' | Set-Content -LiteralPath (Join-Path $confirmedRoot 'host-identity.json')
-    'config-confirmed' | Set-Content -LiteralPath (Join-Path $confirmedRoot 'host-config.json')
+    'config-confirmed' | Set-Content -LiteralPath (Join-Path $confirmedRoot 'host.json')
+    'legacy-config-confirmed' | Set-Content -LiteralPath (Join-Path $confirmedRoot 'host-config.json')
     'preserve-unknown' | Set-Content -LiteralPath (Join-Path $confirmedRoot 'operator-note.txt')
     $confirmedResult = Invoke-UninstallerProcess -LocalAppData $confirmedPurge -PurgeState -ConfirmPurge
     Assert-Equal -Expected 0 -Actual $confirmedResult.ExitCode -Message "confirmed purge failed: $($confirmedResult.Output)"
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $confirmedRoot 'host-identity.json'))) 'confirmed purge left identity'
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $confirmedRoot 'host-config.json'))) 'confirmed purge left config'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $confirmedRoot 'host.json'))) 'confirmed purge left config'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $confirmedRoot 'host-config.json'))) 'confirmed purge left legacy config'
     Assert-Equal -Expected 'preserve-unknown' -Actual (Get-Content -LiteralPath (Join-Path $confirmedRoot 'operator-note.txt') -Raw).Trim() -Message 'confirmed purge removed unknown state'
     Assert-True ($confirmedResult.Output -match 'operator-note') 'confirmed purge did not report preserved unknown state'
 
     # Uninstall failures stop before broader destructive cleanup.
-    foreach ($failurePoint in @('DuringTaskRemoval', 'DuringPathRemoval')) {
+    foreach ($failurePoint in @('DuringManagedProcessStop', 'DuringTaskRemoval', 'DuringPathRemoval')) {
         $failedUninstall = Initialize-ScenarioRoot ("uninstall-failure-" + $failurePoint)
         Install-Fixture -Scenario $failedUninstall -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
         $failedRoot = Join-Path $failedUninstall 'FarPilot'
+        $failedTask = Get-TestState -LocalAppData $failedUninstall -Name 'task'
+        $failedTask.Running = $true
+        Write-TestStateFile -LocalAppData $failedUninstall -Name 'task' -Value $failedTask
+        $failedTaskJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $failedUninstall) 'task.json') -Raw
+        $failedPathJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $failedUninstall) 'path.json') -Raw
         $failedCurrent = Get-JunctionTarget (Join-Path $failedRoot 'current')
         $failedBin = Get-JunctionTarget (Join-Path $failedRoot 'bin')
         $failure = Invoke-UninstallerProcess -LocalAppData $failedUninstall -FailAfter $failurePoint
@@ -618,6 +625,8 @@ try {
         Assert-Equal -Expected $failedCurrent -Actual (Get-JunctionTarget (Join-Path $failedRoot 'current')) -Message "$failurePoint removed current before safe cleanup"
         Assert-Equal -Expected $failedBin -Actual (Get-JunctionTarget (Join-Path $failedRoot 'bin')) -Message "$failurePoint removed bin before safe cleanup"
         Assert-True (Test-Path -LiteralPath (Join-Path $failedRoot 'releases\0.2.0-x86_64-pc-windows-msvc\farpilot.exe')) "$failurePoint removed releases"
+        Assert-Equal -Expected $failedTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $failedUninstall) 'task.json') -Raw) -Message "$failurePoint did not restore running task"
+        Assert-Equal -Expected $failedPathJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $failedUninstall) 'path.json') -Raw) -Message "$failurePoint changed PATH"
         Assert-True ($failure.Output -match '(?i)remaining|failed') "$failurePoint did not report remaining managed state"
     }
 
@@ -644,6 +653,44 @@ try {
     $unsafeUninstallResult = Invoke-UninstallerProcess -LocalAppData $uninstallUnsafe
     Assert-True ($unsafeUninstallResult.ExitCode -ne 0) 'uninstall followed unmanaged current junction'
     Assert-Equal -Expected 'external-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $uninstallExternal 'keep.txt') -Raw).Trim() -Message 'uninstall deleted external target'
+
+    # The complete release deletion tree is preflighted before task/process/PATH mutation.
+    $preflightCases = @('unmanaged-directory', 'reparse-entry')
+    foreach ($preflightCase in $preflightCases) {
+        $preflight = Initialize-ScenarioRoot ("uninstall-preflight-" + $preflightCase)
+        Install-Fixture -Scenario $preflight -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
+        $preflightRoot = Join-Path $preflight 'FarPilot'
+        $preflightReleases = Join-Path $preflightRoot 'releases'
+        $preflightTask = Get-TestState -LocalAppData $preflight -Name 'task'
+        $preflightTask.Running = $true
+        Write-TestStateFile -LocalAppData $preflight -Name 'task' -Value $preflightTask
+        $preflightTaskJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $preflight) 'task.json') -Raw
+        $preflightPathJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $preflight) 'path.json') -Raw
+        $preflightCurrent = Get-JunctionTarget (Join-Path $preflightRoot 'current')
+        $preflightBin = Get-JunctionTarget (Join-Path $preflightRoot 'bin')
+        if ($preflightCase -eq 'unmanaged-directory') {
+            $unmanagedRelease = Join-Path $preflightReleases 'operator-data'
+            New-Item -ItemType Directory -Path $unmanagedRelease | Out-Null
+            'release-sentinel' | Set-Content -LiteralPath (Join-Path $unmanagedRelease 'keep.txt')
+        } else {
+            $externalRelease = Join-Path $preflight 'external-release-entry'
+            New-Item -ItemType Directory -Path $externalRelease | Out-Null
+            'reparse-sentinel' | Set-Content -LiteralPath (Join-Path $externalRelease 'keep.txt')
+            New-Item -ItemType Junction -Path (Join-Path $preflightReleases '.staging.external') -Target $externalRelease | Out-Null
+        }
+        $preflightResult = Invoke-UninstallerProcess -LocalAppData $preflight
+        Assert-True ($preflightResult.ExitCode -ne 0) "$preflightCase preflight unexpectedly succeeded"
+        Assert-Equal -Expected $preflightCurrent -Actual (Get-JunctionTarget (Join-Path $preflightRoot 'current')) -Message "$preflightCase changed current"
+        Assert-Equal -Expected $preflightBin -Actual (Get-JunctionTarget (Join-Path $preflightRoot 'bin')) -Message "$preflightCase changed bin"
+        Assert-Equal -Expected $preflightTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $preflight) 'task.json') -Raw) -Message "$preflightCase changed task before preflight completed"
+        Assert-Equal -Expected $preflightPathJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $preflight) 'path.json') -Raw) -Message "$preflightCase changed PATH before preflight completed"
+        Assert-True (Test-Path -LiteralPath (Join-Path $preflightCurrent 'farpilot.exe')) "$preflightCase removed active release"
+        if ($preflightCase -eq 'unmanaged-directory') {
+            Assert-Equal -Expected 'release-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $preflightReleases 'operator-data\keep.txt') -Raw).Trim() -Message 'unmanaged release data changed'
+        } else {
+            Assert-Equal -Expected 'reparse-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $preflight 'external-release-entry\keep.txt') -Raw).Trim() -Message 'release reparse target changed'
+        }
+    }
 
     # DryRun makes no FarPilot root and leaves user PATH unchanged.
     $dryRun = Initialize-ScenarioRoot 'dry-run'

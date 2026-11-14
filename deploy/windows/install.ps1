@@ -694,45 +694,74 @@ function Assert-SafeUninstallDirectory {
     if (-not (Test-RegularDirectory $Path)) { throw "Refusing unsafe $Label path: $Path" }
 }
 
-function Invoke-FarPilotManagedInstallStateRemoval {
-    param([string]$Root, [string]$ReleasesDir, [string]$CurrentDir, [string]$BinDir)
-    foreach ($alias in @($CurrentDir, $BinDir)) {
-        if (-not (Test-Path -LiteralPath $alias)) { continue }
-        $item = Get-Item -LiteralPath $alias -Force
-        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-            if ($item.LinkType -ne 'Junction') { throw "Refusing unsafe uninstall reparse point: $alias" }
-            $target = Get-JunctionTarget $alias
-            Assert-ManagedReleaseTarget -Target $target -ReleasesDir $ReleasesDir -AliasPath $alias
-            Remove-Item -LiteralPath $alias -Force
-        } elseif ($item.PSIsContainer) {
-            $entries = @(Get-ChildItem -LiteralPath $alias -Force)
-            if ($entries.Count -eq 0) {
-                Remove-Item -LiteralPath $alias -Force
-            } elseif ($entries.Count -eq 1 -and $entries[0].Name -ieq 'farpilot.exe' -and (Test-RegularFile $entries[0].FullName)) {
-                Remove-Item -LiteralPath $alias -Recurse -Force
-            } else {
-                throw "Refusing unmanaged uninstall directory: $alias"
-            }
-        } else {
-            throw "Refusing unmanaged uninstall file: $alias"
-        }
+function Get-FarPilotUninstallDeletionPlan {
+    param([string]$Root, [string]$ReleasesDir, [string]$CurrentDir, [string]$BinDir, [string]$LockPath)
+    $aliases = @()
+    foreach ($aliasSpec in @(
+        [PSCustomObject]@{ Path = $CurrentDir; AllowLegacy = $false },
+        [PSCustomObject]@{ Path = $BinDir; AllowLegacy = $true }
+    )) {
+        $state = Get-JunctionState -Path $aliasSpec.Path -ReleasesDir $ReleasesDir -AllowLegacyBinary $aliasSpec.AllowLegacy
+        if ($state.Kind -ne 'Missing') { $aliases += [string]$aliasSpec.Path }
     }
+    $releaseEntries = @()
     if (Test-Path -LiteralPath $ReleasesDir) {
         Assert-SafeUninstallDirectory -Path $ReleasesDir -Root $Root -Label 'releases directory'
         foreach ($entry in @(Get-ChildItem -LiteralPath $ReleasesDir -Force)) {
             if (-not $entry.PSIsContainer -or ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
                 throw "Refusing unsafe release entry during uninstall: $($entry.FullName)"
             }
-            if ($entry.Name -notmatch '^(?:[0-9]+\.[0-9]+\.[0-9]+-x86_64-pc-windows-msvc|\.staging\.|\.backup\.)') {
+            if ($entry.Name -notmatch '^(?:[0-9]+\.[0-9]+\.[0-9]+-x86_64-pc-windows-msvc|\.staging\..+|\.backup\..+)$') {
                 throw "Refusing unmanaged release directory during uninstall: $($entry.FullName)"
             }
-            Remove-Item -LiteralPath $entry.FullName -Recurse -Force
+            Assert-SafeUninstallDirectory -Path $entry.FullName -Root $ReleasesDir -Label 'release entry'
+            $releaseEntries += [string]$entry.FullName
         }
-        if (@(Get-ChildItem -LiteralPath $ReleasesDir -Force).Count -eq 0) { Remove-Item -LiteralPath $ReleasesDir -Force }
     }
-    foreach ($legacy in @(Get-ChildItem -LiteralPath $Root -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'bin.legacy.*' })) {
-        Assert-SafeUninstallDirectory -Path $legacy.FullName -Root $Root -Label 'legacy backup'
-        Remove-Item -LiteralPath $legacy.FullName -Recurse -Force
+    $legacyEntries = @()
+    foreach ($entry in @(Get-ChildItem -LiteralPath $Root -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'bin.legacy.*' })) {
+        if ($entry.Name -notmatch '^bin\.legacy\.[A-Fa-f0-9]{32}$') {
+            throw "Refusing unmanaged legacy directory during uninstall: $($entry.FullName)"
+        }
+        Assert-SafeUninstallDirectory -Path $entry.FullName -Root $Root -Label 'legacy backup'
+        $legacyEntries += [string]$entry.FullName
+    }
+    if (Test-Path -LiteralPath $LockPath) {
+        if (-not (Test-RegularFile $LockPath) -or -not (Test-PathInside -Path $LockPath -Parent $Root)) {
+            throw "Refusing unsafe install lock during uninstall: $LockPath"
+        }
+    }
+    return [PSCustomObject]@{
+        Aliases = @($aliases)
+        ReleaseEntries = @($releaseEntries)
+        LegacyEntries = @($legacyEntries)
+        ReleasesDir = $ReleasesDir
+    }
+}
+
+function Invoke-FarPilotManagedInstallStateRemoval {
+    param([object]$Plan)
+    foreach ($alias in @($Plan.Aliases)) {
+        if (-not (Test-Path -LiteralPath $alias)) { throw "Managed alias changed after uninstall preflight: $alias" }
+        $item = Get-Item -LiteralPath $alias -Force
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            if ($item.LinkType -ne 'Junction') { throw "Managed alias became unsafe after preflight: $alias" }
+            Remove-Item -LiteralPath $alias -Force
+        } elseif ($item.PSIsContainer) {
+            Remove-Item -LiteralPath $alias -Recurse -Force
+        } else {
+            throw "Managed alias became unsafe after preflight: $alias"
+        }
+    }
+    foreach ($path in @($Plan.ReleaseEntries) + @($Plan.LegacyEntries)) {
+        if (-not (Test-RegularDirectory $path)) { throw "Managed uninstall path changed after preflight: $path" }
+        Remove-Item -LiteralPath $path -Recurse -Force
+    }
+    if (Test-Path -LiteralPath $Plan.ReleasesDir) {
+        if (@(Get-ChildItem -LiteralPath $Plan.ReleasesDir -Force).Count -ne 0) {
+            throw "Release directory changed after uninstall preflight: $($Plan.ReleasesDir)"
+        }
+        Remove-Item -LiteralPath $Plan.ReleasesDir -Force
     }
 }
 
@@ -759,19 +788,19 @@ function Invoke-FarPilotUninstall {
         return
     }
     if (-not (Test-RegularDirectory $Root)) { throw "Refusing unsafe FarPilot root during uninstall: $Root" }
-    Get-JunctionState -Path $CurrentDir -ReleasesDir $ReleasesDir -AllowLegacyBinary $false | Out-Null
-    Get-JunctionState -Path $BinDir -ReleasesDir $ReleasesDir -AllowLegacyBinary $true | Out-Null
+    Get-FarPilotUninstallDeletionPlan -Root $Root -ReleasesDir $ReleasesDir -CurrentDir $CurrentDir -BinDir $BinDir -LockPath $LockPath | Out-Null
     $taskState = Get-FarPilotStartupTaskState
     $pathState = Get-UserPathState
     $processState = @(Get-ManagedFarPilotProcessState)
     $lock = Enter-InstallLock $LockPath
+    $deletionPlan = Get-FarPilotUninstallDeletionPlan -Root $Root -ReleasesDir $ReleasesDir -CurrentDir $CurrentDir -BinDir $BinDir -LockPath $LockPath
     $taskMutated = $false
     $pathMutated = $false
     try {
         try {
+            $taskMutated = [bool]$taskState.Exists
             Invoke-FarPilotStartupTaskStop -State $taskState
             Invoke-ManagedFarPilotProcessStop -ProcessState $processState -ReleasesDir $ReleasesDir
-            $taskMutated = $true
             Invoke-FarPilotStartupTaskRemoval -State $taskState
             $pathMutated = $true
             Invoke-UserPathRemoval -ReleasesDir $ReleasesDir -Aliases @($CurrentDir, $BinDir)
@@ -785,13 +814,13 @@ function Invoke-FarPilotUninstall {
             if ($restoreErrors.Count -ne 0) { $message += ". Restore errors: $($restoreErrors -join '; ')" }
             throw $message
         }
-        Invoke-FarPilotManagedInstallStateRemoval -Root $Root -ReleasesDir $ReleasesDir -CurrentDir $CurrentDir -BinDir $BinDir
+        Invoke-FarPilotManagedInstallStateRemoval -Plan $deletionPlan
     } finally {
         if ($null -ne $lock) { $lock.Dispose() }
         Remove-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue
     }
     if ($Purge) {
-        foreach ($known in @('host-identity.json', 'host-config.json')) {
+        foreach ($known in @('host-identity.json', 'host.json', 'host-config.json')) {
             $path = Join-Path $Root $known
             if (Test-Path -LiteralPath $path) {
                 if (-not (Test-RegularFile $path)) { throw "Refusing unsafe FarPilot state file: $path" }
