@@ -59,8 +59,7 @@ The operation is idempotent: running default uninstall again is safe.
 Current installations persist their visible-bin path and discover it automatically. A pre-metadata installation created with a custom `-InstallDir` and `-NoStartupTask` may need an explicit recovery hint:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1 \
-  -Uninstall -InstallDir 'C:\Tools\FarPilot'
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall -InstallDir 'C:\Tools\FarPilot'
 ```
 
 The hint is accepted only when the path is a validated installer-owned junction into the managed FarPilot release root. External, regular, malformed, or unrelated paths are rejected before mutation.
@@ -130,15 +129,33 @@ The Mac pairing flow can create these exact paths:
 ~/.ssh/farpilot_config
 ```
 
-It can also add this exact include line to `~/.ssh/config`:
+SSH keys and profiles are preserved by default. Before deleting anything, inspect only the exact FarPilot paths without printing key contents:
 
-```text
-Include ~/.ssh/farpilot_config
+```bash
+test ! -e "$HOME/.ssh/farpilot_ed25519" || ls -ld -- "$HOME/.ssh/farpilot_ed25519"
+test ! -e "$HOME/.ssh/farpilot_ed25519.pub" || ls -ld -- "$HOME/.ssh/farpilot_ed25519.pub"
+test ! -e "$HOME/.ssh/farpilot_known_hosts" || ls -ld -- "$HOME/.ssh/farpilot_known_hosts"
+test ! -e "$HOME/.ssh/farpilot_config" || ls -ld -- "$HOME/.ssh/farpilot_config"
 ```
 
-SSH keys and profiles are preserved by default. First revoke the device on the Gateway, then inspect each exact file. Remove only the specific FarPilot file you intend to delete and remove only the matching Include line from `~/.ssh/config`.
+The pairing flow can also add this exact include line to `~/.ssh/config`. Inspect the reference without displaying any private-key body:
 
-Never use an unquoted wildcard or broad deletion command under `~/.ssh`.
+```bash
+grep -F 'farpilot_config' "$HOME/.ssh/config"
+```
+
+The stored Include line normally contains an expanded absolute home path. Review only the matching line and confirm it references the exact FarPilot profile before editing the file.
+
+After revoking the device on the Gateway, backing up any material you intend to retain, and confirming each path above is the expected FarPilot regular file, optional exact removal is:
+
+```bash
+rm -- "$HOME/.ssh/farpilot_ed25519"
+rm -- "$HOME/.ssh/farpilot_ed25519.pub"
+rm -- "$HOME/.ssh/farpilot_known_hosts"
+rm -- "$HOME/.ssh/farpilot_config"
+```
+
+Remove only the matching FarPilot Include line from `~/.ssh/config` with a reviewed editor or a separately backed-up exact-line edit. Never use an unquoted wildcard or broad deletion command under `~/.ssh`.
 
 ## Linux Gateway
 

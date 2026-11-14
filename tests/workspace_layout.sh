@@ -80,6 +80,21 @@ grep -Fq -- '-Uninstall' "$uninstall_doc"
 grep -Fq -- '-PurgeState' "$uninstall_doc"
 grep -Fq 'SSH keys and profiles are preserved by default' "$uninstall_doc"
 grep -Fq 'Gateway environment, database, authorized keys, SSH host keys, and certificates are preserved by default' "$uninstall_doc"
+grep -Fq "powershell -ExecutionPolicy Bypass -File .\\install.ps1 -Uninstall -InstallDir 'C:\\Tools\\FarPilot'" "$uninstall_doc"
+if awk '
+  /^```powershell[[:space:]]*$/ { in_powershell = 1; next }
+  in_powershell && /^```/ { in_powershell = 0; next }
+  in_powershell && /\\[[:space:]]*$/ { bad = 1 }
+  END { exit(bad ? 0 : 1) }
+' "$uninstall_doc"; then
+  echo 'PowerShell fenced block uses a POSIX backslash continuation' >&2
+  exit 1
+fi
+for ssh_path in farpilot_ed25519 farpilot_ed25519.pub farpilot_known_hosts farpilot_config; do
+  grep -Fq "test ! -e \"\$HOME/.ssh/$ssh_path\" || ls -ld -- \"\$HOME/.ssh/$ssh_path\"" "$uninstall_doc"
+  grep -Fq "rm -- \"\$HOME/.ssh/$ssh_path\"" "$uninstall_doc"
+done
+grep -Fq "grep -F 'farpilot_config' \"\$HOME/.ssh/config\"" "$uninstall_doc"
 if grep -Eqi 'rm[[:space:]]+(-[^[:space:]]+[[:space:]]+)*[^\n]*\.ssh/\*|curl[^\n|]*\|[^\n]*(uninstall|purge)' "$uninstall_doc"; then
   echo 'uninstall guide contains a broad SSH glob or remote destructive pipeline' >&2
   exit 1
