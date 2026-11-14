@@ -116,7 +116,18 @@ def validate_application(document)
     "signpath-application",
     "unsigned",
   ].each { |needle| assert(publish_text.include?(needle), "publish job missing #{needle}") }
-  assert(publish_text.scan("assert_release_absent").length >= 3, "release absence must be checked before and immediately before tag creation")
+  guard_occurrences = publish.fetch("steps").sum { |step| step["run"].to_s.scan(/\bassert_release_absent\b/).length }
+  assert(guard_occurrences == 4, "release absence helper must be defined and called in both preflight and atomic publish steps")
+  race_step = publish.fetch("steps").find { |step| step["run"]&.include?("/git/refs") }
+  assert(!race_step.nil?, "atomic tag creation step is missing")
+  race_lines = race_step.fetch("run").lines.map(&:rstrip)
+  definition_index = race_lines.index("assert_release_absent() {")
+  close_index = definition_index && race_lines.each_index.find { |index| index > definition_index && race_lines[index] == "}" }
+  call_index = close_index && race_lines.each_index.find { |index| index > close_index && race_lines[index].strip == "assert_release_absent" }
+  ref_index = call_index && race_lines.each_index.find { |index| index > call_index && race_lines[index].include?("if ! gh api --method POST") && race_lines[index].include?("/git/refs") }
+  assert(definition_index && close_index && call_index && ref_index, "atomic publish step must define, call, then create the tag")
+  assert(race_lines[(close_index + 1)...call_index].all? { |line| line.strip.empty? }, "release absence call must immediately follow its local helper definition")
+  assert(race_lines[(call_index + 1)...ref_index].all? { |line| line.strip.empty? }, "release absence call must occur immediately before atomic tag creation")
   assert(!publish_text.include?("--target"), "release creation must not override the atomically created tag")
   assert(!publish_text.include?("gh release view"), "generic release-view checks are fail-open")
   assert(!publish_text.include?("if git ls-remote"), "tag preflight must distinguish every exit status")
@@ -154,6 +165,10 @@ mutations = {
   "missing ref creation" => ->(doc) { doc["jobs"]["publish"]["steps"].reject! { |step| step.to_s.include?("/git/refs") } },
   "generic release lookup" => ->(doc) { doc["jobs"]["publish"]["steps"].each { |step| step["run"]&.gsub!("assert_release_absent", "gh release view") } },
   "fail-open tag check" => ->(doc) { doc["jobs"]["publish"]["steps"].each { |step| step["run"]&.gsub!("unexpected git ls-remote status", "ignored git ls-remote status") } },
+  "missing immediate race guard" => ->(doc) {
+    step = doc["jobs"]["publish"]["steps"].find { |candidate| candidate["run"]&.include?("/git/refs") }
+    step["run"].sub!(/(\n\s*)assert_release_absent(\n\s*\n\s*if ! gh api --method POST)/, '\\1\\2')
+  },
 }
 mutations.each do |name, mutation|
   copy = Marshal.load(Marshal.dump(application))
