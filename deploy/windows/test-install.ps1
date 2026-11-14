@@ -123,6 +123,7 @@ function Invoke-UninstallerProcess {
         [string]$PurgeConfirmation = '',
         [switch]$DryRun,
         [string]$FailAfter = '',
+        [string]$LegacyInstallDir = '',
         [string[]]$AdditionalArguments = @()
     )
     $testState = Initialize-TestState $LocalAppData
@@ -134,6 +135,7 @@ function Invoke-UninstallerProcess {
         '-TestStateDirectory', $testState
     )
     if ($PurgeState) { $arguments += '-PurgeState' }
+    if (-not [string]::IsNullOrWhiteSpace($LegacyInstallDir)) { $arguments += @('-InstallDir', $LegacyInstallDir) }
     if ($DryRun) { $arguments += '-DryRun' }
     if (-not [string]::IsNullOrWhiteSpace($FailAfter)) { $arguments += @('-TestFailAfter', $FailAfter) }
     $arguments += $AdditionalArguments
@@ -593,6 +595,10 @@ try {
     $customRoot = Join-Path $customInstall 'FarPilot'
     $customState = Get-Content -LiteralPath (Join-Path $customRoot 'install-state.json') -Raw | ConvertFrom-Json
     Assert-Equal -Expected ([IO.Path]::GetFullPath($customBin).TrimEnd('\')) -Actual ([string]$customState.visible_bin) -Message 'custom visible bin was not persisted'
+    $customCurrentBeforeHint = Get-JunctionTarget (Join-Path $customRoot 'current')
+    $unnecessaryHint = Invoke-UninstallerProcess -LocalAppData $customInstall -LegacyInstallDir $customBin
+    Assert-True ($unnecessaryHint.ExitCode -ne 0) 'InstallDir hint with metadata unexpectedly succeeded'
+    Assert-Equal -Expected $customCurrentBeforeHint -Actual (Get-JunctionTarget (Join-Path $customRoot 'current')) -Message 'unnecessary InstallDir hint mutated current'
     $customStateArtifacts = @(Get-ChildItem -LiteralPath $customRoot -Force | Where-Object { $_.Name -like '.install-state.*' })
     Assert-Equal -Expected 0 -Actual $customStateArtifacts.Count -Message 'custom upgrade left install-state temp or backup artifacts'
     $defaultBin = Join-Path $customRoot 'bin'
@@ -616,6 +622,34 @@ try {
     Assert-Equal -Expected 0 -Actual $legacyCustomUninstall.ExitCode -Message "legacy custom uninstall failed: $($legacyCustomUninstall.Output)"
     Assert-True (-not (Test-Path -LiteralPath $legacyCustomBin)) 'legacy custom visible bin remained after uninstall'
     Assert-Equal -Expected 'legacy-default-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $legacyDefaultBin 'keep.txt') -Raw).Trim() -Message 'legacy custom uninstall removed unrelated default bin'
+
+    # A no-task legacy custom install can be recovered only with a validated InstallDir hint.
+    $legacyHint = Initialize-ScenarioRoot 'legacy-custom-hint'
+    $legacyHintBin = Join-Path $legacyHint 'hint-visible-bin'
+    Install-Fixture -Scenario $legacyHint -Package $packages['0.2.0'] -Version '0.2.0' -InstallDir $legacyHintBin | Out-Null
+    $legacyHintRoot = Join-Path $legacyHint 'FarPilot'
+    Remove-Item -LiteralPath (Join-Path $legacyHintRoot 'install-state.json') -Force
+    $legacyHintResult = Invoke-UninstallerProcess -LocalAppData $legacyHint -LegacyInstallDir $legacyHintBin
+    Assert-Equal -Expected 0 -Actual $legacyHintResult.ExitCode -Message "legacy InstallDir hint uninstall failed: $($legacyHintResult.Output)"
+    Assert-True (-not (Test-Path -LiteralPath $legacyHintBin)) 'legacy InstallDir hint left custom junction'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $legacyHintRoot 'releases'))) 'legacy InstallDir hint left releases'
+
+    # An external/non-junction InstallDir hint is rejected before mutation.
+    $maliciousHint = Initialize-ScenarioRoot 'legacy-malicious-hint'
+    $managedHintBin = Join-Path $maliciousHint 'managed-hint-bin'
+    Install-Fixture -Scenario $maliciousHint -Package $packages['0.2.0'] -Version '0.2.0' -InstallDir $managedHintBin | Out-Null
+    $maliciousHintRoot = Join-Path $maliciousHint 'FarPilot'
+    Remove-Item -LiteralPath (Join-Path $maliciousHintRoot 'install-state.json') -Force
+    $externalHint = Join-Path $maliciousHint 'external-hint'
+    New-Item -ItemType Directory -Path $externalHint | Out-Null
+    'external-hint-sentinel' | Set-Content -LiteralPath (Join-Path $externalHint 'keep.txt')
+    $maliciousHintPathJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $maliciousHint) 'path.json') -Raw
+    $maliciousHintCurrent = Get-JunctionTarget (Join-Path $maliciousHintRoot 'current')
+    $maliciousHintResult = Invoke-UninstallerProcess -LocalAppData $maliciousHint -LegacyInstallDir $externalHint
+    Assert-True ($maliciousHintResult.ExitCode -ne 0) 'external InstallDir hint unexpectedly uninstalled'
+    Assert-Equal -Expected $maliciousHintCurrent -Actual (Get-JunctionTarget (Join-Path $maliciousHintRoot 'current')) -Message 'external InstallDir hint changed current'
+    Assert-Equal -Expected $maliciousHintPathJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $maliciousHint) 'path.json') -Raw) -Message 'external InstallDir hint changed PATH'
+    Assert-Equal -Expected 'external-hint-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $externalHint 'keep.txt') -Raw).Trim() -Message 'external InstallDir hint changed external state'
 
     # A legacy task that points outside a managed junction is rejected before mutation.
     $maliciousTask = Initialize-ScenarioRoot 'legacy-external-task'
@@ -707,6 +741,24 @@ try {
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $confirmedRoot 'host-config.json'))) 'confirmed purge left legacy config'
     Assert-Equal -Expected 'preserve-unknown' -Actual (Get-Content -LiteralPath (Join-Path $confirmedRoot 'operator-note.txt') -Raw).Trim() -Message 'confirmed purge removed unknown state'
     Assert-True ($confirmedResult.Output -match 'operator-note') 'confirmed purge did not report preserved unknown state'
+
+    # Sensitive purge cleanup failure is nonzero and retains recoverable quarantined state.
+    $purgeCleanupFailure = Initialize-ScenarioRoot 'purge-cleanup-incomplete'
+    Install-Fixture -Scenario $purgeCleanupFailure -Package $packages['0.2.0'] -Version '0.2.0' | Out-Null
+    $purgeCleanupRoot = Join-Path $purgeCleanupFailure 'FarPilot'
+    'purge-cleanup-identity' | Set-Content -LiteralPath (Join-Path $purgeCleanupRoot 'host-identity.json')
+    'purge-cleanup-config' | Set-Content -LiteralPath (Join-Path $purgeCleanupRoot 'host.json')
+    'purge-cleanup-unknown' | Set-Content -LiteralPath (Join-Path $purgeCleanupRoot 'operator-note.txt')
+    $purgeCleanupResult = Invoke-UninstallerProcess -LocalAppData $purgeCleanupFailure -PurgeState -PurgeConfirmation 'PURGE FARPILOT STATE' -FailAfter 'DuringPurgeCleanup'
+    Assert-True ($purgeCleanupResult.ExitCode -ne 0) 'sensitive purge cleanup failure unexpectedly succeeded'
+    Assert-True ($purgeCleanupResult.Output -match 'purge incomplete') 'sensitive purge cleanup failure omitted purge-incomplete error'
+    Assert-True ($purgeCleanupResult.Output -notmatch 'FarPilot uninstall completed\.') 'sensitive purge cleanup failure printed false success'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $purgeCleanupRoot 'host-identity.json'))) 'sensitive purge cleanup failure restored live identity path'
+    $identityQuarantine = @(Get-ChildItem -LiteralPath $purgeCleanupRoot -Force | Where-Object { $_.Name -like '.farpilot-uninstall.*.host-identity.json' })
+    Assert-Equal -Expected 1 -Actual $identityQuarantine.Count -Message 'sensitive identity quarantine was not retained exactly once'
+    Assert-Equal -Expected 'purge-cleanup-identity' -Actual (Get-Content -LiteralPath $identityQuarantine[0].FullName -Raw).Trim() -Message 'retained identity quarantine content changed'
+    Assert-True ($purgeCleanupResult.Output -match [regex]::Escape($identityQuarantine[0].FullName)) 'purge-incomplete error omitted retained sensitive path'
+    Assert-Equal -Expected 'purge-cleanup-unknown' -Actual (Get-Content -LiteralPath (Join-Path $purgeCleanupRoot 'operator-note.txt') -Raw).Trim() -Message 'sensitive purge cleanup failure changed unknown state'
 
     # Uninstall failures stop before broader destructive cleanup.
     foreach ($failurePoint in @('DuringManagedProcessStop', 'DuringAliasQuarantine', 'DuringReleaseQuarantine', 'DuringTaskRemoval', 'DuringPathRemoval')) {

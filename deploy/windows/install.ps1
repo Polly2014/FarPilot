@@ -12,7 +12,7 @@ param(
     [string]$LocalPackageVersion,
     [string]$LocalPackageSha256,
     [string]$TestStateDirectory,
-    [ValidateSet('', 'DuringPathStateCapture', 'DuringManagedProcessStop', 'DuringTaskRemoval', 'DuringPathRemoval', 'DuringAliasQuarantine', 'DuringReleaseQuarantine', 'DuringUninstallCleanup', 'DuringInstallStateReplace', 'AfterCurrentJunction', 'AfterBinJunction', 'AfterPathUpdate', 'DuringTaskUpdate', 'DuringTaskStart', 'DuringCleanup')]
+    [ValidateSet('', 'DuringPathStateCapture', 'DuringManagedProcessStop', 'DuringTaskRemoval', 'DuringPathRemoval', 'DuringAliasQuarantine', 'DuringReleaseQuarantine', 'DuringUninstallCleanup', 'DuringPurgeCleanup', 'DuringInstallStateReplace', 'AfterCurrentJunction', 'AfterBinJunction', 'AfterPathUpdate', 'DuringTaskUpdate', 'DuringTaskStart', 'DuringCleanup')]
     [string]$TestFailAfter = ''
 )
 
@@ -698,18 +698,42 @@ function Get-FarPilotInstallState {
 }
 
 function Resolve-FarPilotUninstallBinDir {
-    param([object]$InstallState, [object]$TaskState, [string]$DefaultBinDir, [string]$ReleasesDir)
-    if ($InstallState.Exists) { return [string]$InstallState.VisibleBin }
-    if (-not $TaskState.Exists) { return Get-CanonicalPath $DefaultBinDir }
-    $executable = [string]$TaskState.Executable
-    if ([string]::IsNullOrWhiteSpace($executable) -or (Split-Path -Leaf $executable) -ine 'farpilot.exe' -or
-        [string]$TaskState.Arguments -cne 'host start') {
-        throw 'Existing FarPilot task does not contain a valid managed executable path'
+    param(
+        [object]$InstallState,
+        [object]$TaskState,
+        [string]$DefaultBinDir,
+        [string]$CurrentDir,
+        [string]$ReleasesDir,
+        [string]$LegacyHint
+    )
+    if ($InstallState.Exists) {
+        if (-not [string]::IsNullOrWhiteSpace($LegacyHint)) { throw 'InstallDir is unnecessary and forbidden when install-state metadata exists' }
+        return [string]$InstallState.VisibleBin
     }
-    $candidate = Get-CanonicalPath (Split-Path -Parent $executable)
-    $state = Get-JunctionState -Path $candidate -ReleasesDir $ReleasesDir -AllowLegacyBinary $false
-    if ($state.Kind -ne 'Junction') { throw 'Existing FarPilot task executable is not under a managed visible-bin junction' }
-    return $candidate
+    if ($TaskState.Exists) {
+        if (-not [string]::IsNullOrWhiteSpace($LegacyHint)) { throw 'InstallDir is forbidden when a managed FarPilot task identifies the visible bin' }
+        $executable = [string]$TaskState.Executable
+        if ([string]::IsNullOrWhiteSpace($executable) -or (Split-Path -Leaf $executable) -ine 'farpilot.exe' -or
+            [string]$TaskState.Arguments -cne 'host start') {
+            throw 'Existing FarPilot task does not contain a valid managed executable path'
+        }
+        $candidate = Get-CanonicalPath (Split-Path -Parent $executable)
+        $state = Get-JunctionState -Path $candidate -ReleasesDir $ReleasesDir -AllowLegacyBinary $false
+        if ($state.Kind -ne 'Junction') { throw 'Existing FarPilot task executable is not under a managed visible-bin junction' }
+        return $candidate
+    }
+    if (-not [string]::IsNullOrWhiteSpace($LegacyHint)) {
+        $candidate = Get-CanonicalPath $LegacyHint
+        $state = Get-JunctionState -Path $candidate -ReleasesDir $ReleasesDir -AllowLegacyBinary $false
+        if ($state.Kind -ne 'Junction') { throw 'Legacy InstallDir must be a managed FarPilot junction' }
+        return $candidate
+    }
+    $defaultCandidate = Get-CanonicalPath $DefaultBinDir
+    $defaultState = Get-JunctionState -Path $defaultCandidate -ReleasesDir $ReleasesDir -AllowLegacyBinary $true
+    if ($defaultState.Kind -eq 'Missing' -and (Test-Path -LiteralPath $CurrentDir)) {
+        throw 'FarPilot visible bin cannot be inferred; rerun Uninstall with the legacy InstallDir path'
+    }
+    return $defaultCandidate
 }
 
 function Write-FarPilotInstallState {
@@ -928,12 +952,12 @@ function Restore-FarPilotUninstallQuarantine {
 }
 
 function Invoke-FarPilotUninstallQuarantineCleanup {
-    param([object[]]$Entries)
+    param([object[]]$Entries, [string]$FailurePoint = 'DuringUninstallCleanup')
     $errors = @()
     foreach ($entry in @($Entries)) {
         if (-not (Test-Path -LiteralPath $entry.Quarantine)) { continue }
         try {
-            Invoke-TestFailure -Point 'DuringUninstallCleanup'
+            Invoke-TestFailure -Point $FailurePoint
             $item = Get-Item -LiteralPath $entry.Quarantine -Force
             if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
                 Remove-Item -LiteralPath $entry.Quarantine -Force
@@ -1007,6 +1031,8 @@ function Invoke-FarPilotUninstall {
     }
     if (-not $committed) { throw 'FarPilot uninstall did not reach commit' }
     $cleanupErrors = @(Invoke-FarPilotUninstallQuarantineCleanup -Entries $quarantined)
+    $purgeCleanupErrors = @()
+    $purgeQuarantine = @()
     if ($Purge) {
         $knownState = @()
         foreach ($known in @('host-identity.json', 'host.json', 'host-config.json')) {
@@ -1022,8 +1048,12 @@ function Invoke-FarPilotUninstall {
                 LockPath = (Join-Path $Root '.no-purge-lock'); ReleasesDir = (Join-Path $Root '.no-purge-releases')
             }
             $purgeQuarantine = @(Invoke-FarPilotUninstallQuarantine -Plan $purgePlan)
-            $cleanupErrors += @(Invoke-FarPilotUninstallQuarantineCleanup -Entries $purgeQuarantine)
+            $purgeCleanupErrors = @(Invoke-FarPilotUninstallQuarantineCleanup -Entries $purgeQuarantine -FailurePoint 'DuringPurgeCleanup')
         }
+    }
+    if ($purgeCleanupErrors.Count -ne 0) {
+        $retainedSensitive = @($purgeQuarantine | Where-Object { Test-Path -LiteralPath $_.Quarantine } | ForEach-Object { $_.Quarantine })
+        throw "FarPilot purge incomplete; sensitive state remains in protected quarantine: $($retainedSensitive -join ', '). Cleanup errors: $($purgeCleanupErrors -join '; ')"
     }
     $remainingState = @(Get-ChildItem -LiteralPath $Root -Force -ErrorAction SilentlyContinue)
     if ($remainingState.Count -eq 0) {
@@ -1087,7 +1117,7 @@ if ($testAdapterRequested) {
 }
 
 if ($Uninstall) {
-    foreach ($installOnly in @('Version', 'ManifestUrl', 'InstallDir', 'NoStartupTask', 'Retain', 'LocalPackagePath', 'LocalPackageVersion', 'LocalPackageSha256')) {
+    foreach ($installOnly in @('Version', 'ManifestUrl', 'NoStartupTask', 'Retain', 'LocalPackagePath', 'LocalPackageVersion', 'LocalPackageSha256')) {
         if ($PSBoundParameters.ContainsKey($installOnly)) { throw "$installOnly cannot be used with Uninstall" }
     }
     if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw 'LOCALAPPDATA is not set' }
@@ -1101,7 +1131,7 @@ if ($Uninstall) {
     $uninstallStatePath = Join-Path $uninstallRoot 'install-state.json'
     $uninstallState = Get-FarPilotInstallState -Path $uninstallStatePath -DefaultBinDir (Join-Path $uninstallRoot 'bin')
     $uninstallTaskEvidence = Get-FarPilotStartupTaskState
-    $uninstallBin = Resolve-FarPilotUninstallBinDir -InstallState $uninstallState -TaskState $uninstallTaskEvidence -DefaultBinDir (Join-Path $uninstallRoot 'bin') -ReleasesDir $uninstallReleases
+    $uninstallBin = Resolve-FarPilotUninstallBinDir -InstallState $uninstallState -TaskState $uninstallTaskEvidence -DefaultBinDir (Join-Path $uninstallRoot 'bin') -CurrentDir $uninstallCurrent -ReleasesDir $uninstallReleases -LegacyHint $InstallDir
     $uninstallLock = Join-Path $uninstallRoot 'install.lock'
     Invoke-FarPilotUninstall -Root $uninstallRoot -ReleasesDir $uninstallReleases -CurrentDir $uninstallCurrent -BinDir $uninstallBin -LockPath $uninstallLock -InstallStatePath $uninstallStatePath -Purge ([bool]$PurgeState) -Preview ([bool]$DryRun)
     return
