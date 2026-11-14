@@ -4,7 +4,7 @@
 
 **Repository visibility:** Private
 
-**Final private review date/revision:** 2026-11-15 at `5faf9de34e56`
+**Final private review date/revision:** 2026-11-15 at `9528c38acd78`
 
 This committed file records only sanitized counts and dispositions. Raw scanner output, matching values, private paths, identity documents, and credentials remain outside the repository in mode-0600 private job storage.
 
@@ -22,7 +22,7 @@ This committed file records only sanitized counts and dispositions. Raw scanner 
 | Proprietary-component review | Pass for current graph/artifact set | Cargo source/license policy passes, non-OSI root-data packages were removed, and the exact release assembly contains no third-party executable artifact |
 | Malware/PUA behavior review | Pass for internal readiness; external classification pending | Source and behavior review found an authorized self-hosted terminal relay with explicit device grants, a fixed Herdr launcher, restricted Gateway account, no arbitrary shell/forwarding/scanning/exploitation/evasion, documented user-visible startup task/uninstall, and no project telemetry. Final no-hacking-tools classification remains SignPath Foundation's decision |
 | Public documentation and workflow review | Prepared, not public | Signing, privacy, security, uninstall, prerelease, and application documents exist on the readiness branch; anonymous access is unavailable while the repository remains Private |
-| Full regression evidence | Pass on recorded readiness runs | Rust formatting/Clippy/workspace/doc tests, audit 17/17, release 20/20, Windows/POSIX/Gateway installers, deployment, SSH restriction, E2E, workflow mutation, dependency-policy, and shell syntax gates have passed; Task 52 performs the final candidate rerun before Gate A |
+| Full regression evidence | Pass on final candidate | At `9528c38acd78`, Rust formatting/Clippy/workspace/doc tests, audit 17/17, release 20/20, Windows/POSIX/Gateway installers, deployment, SSH restriction, E2E, stable and SignPath workflow mutation, dependency-policy, and shell syntax gates all passed |
 
 ## Sanitized built-in scanner disposition
 
@@ -121,10 +121,9 @@ Do not commit either raw report. Update this document with category counts and d
 
 ## Remaining visibility-gate actions
 
-1. Run Task 52's final full verification and repeat scanners at the exact merge candidate commit.
-2. Review the sanitized final diff and commit list.
-3. Obtain Polly's explicit External Gate A authorization before changing visibility.
-4. After Public conversion, verify anonymous access and security settings before considering the unsigned prerelease gate.
+1. Review the sanitized final diff and commit list for candidate `9528c38acd78`.
+2. Obtain Polly's explicit External Gate A authorization before changing visibility.
+3. After Public conversion, verify anonymous access and security settings before considering the unsigned prerelease gate.
 
 ## Visibility gate
 
