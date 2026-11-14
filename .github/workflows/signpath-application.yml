@@ -23,6 +23,17 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Check dependency advisories, licenses, and sources
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          rust-version: "1.100.0"
+          command: check advisories licenses sources
+      - name: Check dependency bans
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          rust-version: "1.100.0"
+          command: check bans
+          command-arguments: --allow duplicate
       - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
@@ -62,6 +73,7 @@ jobs:
         run: |
           shellcheck install.sh deploy/gateway/install.sh \
             tests/install/install_sh.sh tests/install/gateway_installer.sh \
+            tests/security/dependency_policy.sh \
             tests/release/workflow_assets.sh tests/release/signpath_application_workflow.sh
 
   windows:

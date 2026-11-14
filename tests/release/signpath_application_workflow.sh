@@ -59,9 +59,11 @@ def validate_application(document)
     "tests/install/install_sh.sh",
     "tests/install/gateway_installer.sh",
     "tests/security/sshd_restrictions.sh",
+    "tests/security/dependency_policy.sh",
     "tests/security/sshd_integration.sh",
     "tests/release/workflow_assets.sh",
     "tests/release/signpath_application_workflow.sh",
+    "cargo-deny-action",
     "shellcheck",
   ].each { |needle| assert(quality_text.include?(needle), "quality gate missing #{needle}") }
 

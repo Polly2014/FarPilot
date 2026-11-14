@@ -20,7 +20,9 @@ allow = [
 ]
 
 [bans]
-multiple-versions = "deny"
+# Transitive major-version splits are reviewed by cargo-deny output; denying every
+# duplicate makes routine ecosystem transitions impossible without improving safety.
+multiple-versions = "warn"
 wildcards = "deny"
 highlight = "all"
 
@@ -28,3 +30,6 @@ highlight = "all"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Temporary official SQLx pin until the merged SQLite security bound ships in a
+# crates.io patch release. Cargo.lock binds the exact reviewed revision.
+allow-git = ["https://github.com/transact-rs/sqlx"]

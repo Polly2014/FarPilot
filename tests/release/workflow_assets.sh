@@ -45,6 +45,9 @@ def validate_release(document)
   jobs = document.fetch("jobs")
   expected_jobs = %w[quality ssh-security installers build assemble publish]
   assert(jobs.keys.sort == expected_jobs.sort, "release jobs must be exactly #{expected_jobs.join(', ')}")
+  assert(steps_text(jobs.fetch("quality")).include?("cargo-deny-action"), "release quality gate must run cargo-deny")
+  release_steps = jobs.values.map { |job| steps_text(job) }.join("\n")
+  assert(release_steps.include?("tests/security/dependency_policy.sh"), "release workflow must lint the dependency policy script")
   jobs.each do |name, job|
     next if name == "publish"
     permissions = job["permissions"] || {}
@@ -108,6 +111,8 @@ def validate_ci(document)
     "tests/release/workflow_assets.sh",
     "tests/install/install_sh.sh",
     "tests/install/gateway_installer.sh",
+    "tests/security/dependency_policy.sh",
+    "cargo-deny-action",
     "shellcheck",
     "PSScriptAnalyzer",
   ].each { |needle| assert(text.include?(needle), "CI is missing #{needle}") }

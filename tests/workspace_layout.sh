@@ -7,6 +7,8 @@ test -f "$root/CLAUDE.md"
 test -L "$root/AGENTS.md"
 test "$(readlink "$root/AGENTS.md")" = "CLAUDE.md"
 test -f "$root/Cargo.toml"
+test -f "$root/deny.toml"
+test -x "$root/tests/security/dependency_policy.sh"
 
 for crate in farpilot-core farpilot-gateway farpilot-host farpilot-cli; do
   test -f "$root/crates/$crate/Cargo.toml"
@@ -115,7 +117,8 @@ for required in \
   'Application: NOT SUBMITTED' \
   'Unsigned prerelease: NOT PUBLISHED' \
   'Anonymous link access: NOT AVAILABLE' \
-  'MFA: USER CONFIRMATION REQUIRED' \
+  'GitHub MFA: USER CONFIRMED 2026-11-15' \
+  'SignPath MFA: NOT APPLICABLE UNTIL ACCOUNT/INVITATION EXISTS' \
   'v0.1.0-unsigned.1' \
   'Author: Polly / Polly2014' \
   'Reviewer: Polly / Polly2014' \
@@ -131,7 +134,8 @@ for required in \
   'documented current-user logon Scheduled Task' \
   'removable with `-Uninstall`' \
   'No malware or potentially unwanted applications | **PENDING**' \
-  'Dependency/license audit and no proprietary bundled components | **PENDING**' \
+  'Dependency/license audit and no proprietary bundled components | **PASS**' \
+  'Historical author-email disclosure | **ACCEPTED' \
   'Active maintenance evidence | **IMPLEMENTED BUT NOT PUBLIC**' \
   'Already released in signable form | **NOT SATISFIED**' \
   'No hacking tools | **EXTERNAL REVIEW REQUIRED**' \

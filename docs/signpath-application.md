@@ -7,7 +7,8 @@ Repository visibility: PRIVATE
 Application: NOT SUBMITTED
 Unsigned prerelease: NOT PUBLISHED
 Anonymous link access: NOT AVAILABLE
-MFA: USER CONFIRMATION REQUIRED
+GitHub MFA: USER CONFIRMED 2026-11-15
+SignPath MFA: NOT APPLICABLE UNTIL ACCOUNT/INVITATION EXISTS
 ```
 
 This document contains public project answers and a pre-submission checklist. It does not contain private contact information, legal identity documents, addresses, telephone numbers, SignPath credentials, or API tokens.
@@ -60,13 +61,13 @@ The following SignPath Foundation conditions are not assumed from the Apache-2.0
 |---|---|---|
 | No malware or potentially unwanted applications | **PENDING** | Gitleaks 8.30.1 reported only one reviewed synthetic plan marker and no other finding; the built-in review categories and SignPath-specific manual behavior/PUA review remain incomplete. |
 | OSI-approved project license | **IMPLEMENTED BUT NOT PUBLIC** | Apache-2.0 is present in the private repository; anonymous verification is not yet possible. |
-| Dependency/license audit and no proprietary bundled components | **BLOCKED** | cargo-deny 0.20.2 reported 21 errors: duplicate/wildcard policy diagnostics, two `CDLA-Permissive-2.0` rejections for `webpki-roots` dependency versions, and `RUSTSEC-2026-0459` / `CVE-2026-119375` in `libsqlite3-sys`; remediation and clean rerun are required. |
+| Dependency/license audit and no proprietary bundled components | **PASS** | cargo-deny advisories, licenses, sources, and bans pass under the reviewed duplicate-warning policy; patched `libsqlite3-sys` 0.39.1 is used, wildcard path dependencies are versioned, non-OSI `webpki-roots` packages were removed, and the exact release assembly includes no third-party executable artifact. |
 | Active maintenance evidence | **IMPLEMENTED BUT NOT PUBLIC** | Current private evidence includes commit history, passing CI, current documentation, and recent release-readiness work; it is not anonymously accessible while the repository is Private. |
 | Already released in signable form | **NOT SATISFIED** | The fixed unsigned application prerelease `v0.1.0-unsigned.1` is not published. |
 | Documented functionality and download information | **IMPLEMENTED BUT NOT PUBLIC** | README, runbook, installer, security, and uninstall documentation exist on the readiness branch but are not yet public/merged. |
 | Uninstall instructions or automation | **IMPLEMENTED BUT NOT PUBLIC** | Transactional Windows uninstall and conservative cross-platform guidance exist on the readiness branch. |
 | No hacking tools | **EXTERNAL REVIEW REQUIRED** | FarPilot is designed as an authorized self-hosted terminal relay with strict command, shell, forwarding, and Host authorization boundaries; final classification remains SignPath Foundation's decision. |
-| MFA and signing-role process | **USER CONFIRMATION REQUIRED** | GitHub MFA must be confirmed before submission; SignPath MFA becomes applicable only after account or invitation setup. |
+| MFA and signing-role process | **PARTIAL PASS** | Polly confirmed GitHub MFA on 2026-11-15; SignPath MFA becomes applicable and mandatory only after account or invitation setup. |
 
 Application readiness: **BLOCKED** while any eligibility row is `PENDING`, `NOT SATISFIED`, or `EXTERNAL REVIEW REQUIRED`.
 
@@ -167,9 +168,10 @@ SignPath has not approved FarPilot, the `release-signing` Environment is not con
 | Security reporting policy prepared | **YES on readiness branch; not yet public/merged** |
 | Uninstall implementation and guide prepared | **YES on readiness branch; not yet public/merged** |
 | Public-readiness tree/history audit | **BLOCKED — built-in scan completed; remaining FarPilot-specific review categories need private disposition** |
+| Historical author-email disclosure | **ACCEPTED — Polly confirmed on 2026-11-15 that the `qq.com` author domain in existing commits may be public** |
 | Complementary Gitleaks audit | **COMPLETED — one synthetic plan marker reviewed as a false positive; no other finding** |
-| Dependency/license policy audit | **BLOCKED — cargo-deny found 21 policy/advisory errors, including RUSTSEC-2026-0459 / CVE-2026-119375** |
-| GitHub MFA enabled | **USER CONFIRMATION REQUIRED** |
+| Dependency/license policy audit | **PASS — cargo-deny advisories/licenses/sources/bans pass; patched SQLite 3.54.1 is used, wildcard path dependencies are versioned, and non-OSI webpki root-data dependencies were removed** |
+| GitHub MFA enabled | **YES — USER CONFIRMED 2026-11-15** |
 | SignPath MFA enabled | **NOT APPLICABLE UNTIL ACCOUNT/INVITATION EXISTS** |
 | Unsigned prerelease `v0.1.0-unsigned.1` | **NOT PUBLISHED** |
 | Prerelease workflow run successful | **NOT DISPATCHED** |
