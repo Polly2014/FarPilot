@@ -95,16 +95,16 @@ This section is separate from Stage 0 product acceptance. It records only saniti
 
 | Check | Result | Sanitized evidence |
 |---|---|---|
-| Built-in tracked-tree/history audit | Blocked | Scanner completed against the private readiness branch and all reachable refs; obvious synthetic high-severity examples were privately reviewed, while 26 FarPilot-specific review findings still require private disposition. Raw matches and paths are not committed |
+| Built-in tracked-tree/history audit | Pass after private disposition | Scanner covered the tracked tree and all reachable refs; all 6 high-severity and 27 review findings were privately classified as synthetic fixtures/examples, numeric-version false positives, or the intentional instruction symlink. Raw matches and paths are not committed |
 | Complementary Gitleaks audit | Pass with reviewed false positive | Gitleaks 8.30.1 scanned all history with redaction and reported one synthetic private-key marker in the public SignPath implementation-plan prose; no key material or other finding was reported |
 | Dependency/license audit | Pass with reviewed duplicate policy | cargo-deny advisories/licenses/sources/bans pass; `libsqlite3-sys` resolves to patched 0.39.1, wildcard path dependencies are versioned, non-OSI `webpki-roots` packages were removed, and remaining transitive duplicate major versions are reviewed warnings |
-| Tracked-file review | Pass | 105 tracked entries, no regular file over 1 MiB, no submodule, and no Git LFS pointer candidate |
-| Author identity review | Accepted | One historical email domain is present across 94 commits; Polly accepted public disclosure of the `qq.com` domain on 2026-11-15 |
+| Tracked-file review | Pass | 106 tracked entries, no regular file over 1 MiB, no submodule, and no Git LFS pointer candidate |
+| Author identity review | Accepted | One historical email domain is present across 100 commits; Polly accepted public disclosure of the `qq.com` domain on 2026-11-15 |
 | SignPath proprietary-component review | Pass for current graph | Cargo license/source policy passes and the exact release assembly contains no third-party executable artifact |
-| SignPath malware/PUA behavior review | Pending | Existing automated security tests pass, but the SignPath-specific behavior/PUA eligibility disposition is incomplete |
+| SignPath malware/PUA behavior review | Pass for internal readiness | Production source and behavior were reviewed as an authorized self-hosted relay with explicit grants, fixed Herdr launch, restricted SSH ingress, removable user-visible startup, and no scanning/exploitation/evasion or project telemetry; SignPath retains final no-hacking-tools classification authority |
 | Full local regression | Pass | Rust formatting, Clippy, workspace/doc tests, audit 17/17, release 20/20, installers, deployment, SSH restriction, E2E, workflow mutation, and shell syntax checks passed |
 | Repository visibility change | Not authorized | Repository remains Private; External Gate A has not been approved |
 | Unsigned application prerelease | Not published | External Gate B has not been approved or dispatched |
 | SignPath application | Not submitted | External Gate C remains blocked by public-readiness items |
 
-Do not change repository visibility or publish the unsigned prerelease while `docs/public-readiness-audit.md` is `BLOCKED`.
+`docs/public-readiness-audit.md` is ready for visibility review, but repository visibility, unsigned prerelease publication, and SignPath application still require their separate explicit external-gate approvals.

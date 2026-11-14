@@ -59,7 +59,7 @@ The following SignPath Foundation conditions are not assumed from the Apache-2.0
 
 | SignPath OSS eligibility requirement | Current status | Evidence or remaining work |
 |---|---|---|
-| No malware or potentially unwanted applications | **PENDING** | Gitleaks 8.30.1 reported only one reviewed synthetic plan marker and no other finding; the built-in review categories and SignPath-specific manual behavior/PUA review remain incomplete. |
+| No malware or potentially unwanted applications | **PASS FOR INTERNAL READINESS** | Gitleaks reported only one reviewed synthetic plan marker; all built-in scanner findings were privately dispositioned as synthetic/intentional/false positive; production behavior review found an authorized relay with no credential testing, exploitation, scanning, evasion, stealth persistence, or project telemetry. SignPath retains final classification authority. |
 | OSI-approved project license | **IMPLEMENTED BUT NOT PUBLIC** | Apache-2.0 is present in the private repository; anonymous verification is not yet possible. |
 | Dependency/license audit and no proprietary bundled components | **PASS** | cargo-deny advisories, licenses, sources, and bans pass under the reviewed duplicate-warning policy; patched `libsqlite3-sys` 0.39.1 is used, wildcard path dependencies are versioned, non-OSI `webpki-roots` packages were removed, and the exact release assembly includes no third-party executable artifact. |
 | Active maintenance evidence | **IMPLEMENTED BUT NOT PUBLIC** | Current private evidence includes commit history, passing CI, current documentation, and recent release-readiness work; it is not anonymously accessible while the repository is Private. |
@@ -167,7 +167,7 @@ SignPath has not approved FarPilot, the `release-signing` Environment is not con
 | Privacy policy prepared | **YES on readiness branch; not yet public/merged** |
 | Security reporting policy prepared | **YES on readiness branch; not yet public/merged** |
 | Uninstall implementation and guide prepared | **YES on readiness branch; not yet public/merged** |
-| Public-readiness tree/history audit | **BLOCKED — built-in scan completed; remaining FarPilot-specific review categories need private disposition** |
+| Public-readiness tree/history audit | **READY FOR VISIBILITY REVIEW — built-in findings privately dispositioned; Gitleaks complementary scan reviewed** |
 | Historical author-email disclosure | **ACCEPTED — Polly confirmed on 2026-11-15 that the `qq.com` author domain in existing commits may be public** |
 | Complementary Gitleaks audit | **COMPLETED — one synthetic plan marker reviewed as a false positive; no other finding** |
 | Dependency/license policy audit | **PASS — cargo-deny advisories/licenses/sources/bans pass; patched SQLite 3.54.1 is used, wildcard path dependencies are versioned, and non-OSI webpki root-data dependencies were removed** |
