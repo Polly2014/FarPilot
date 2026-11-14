@@ -14,7 +14,7 @@ SCANNER = ROOT / "scripts" / "public_readiness_audit.py"
 class PublicReadinessAuditTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.base = Path(self.temp.name)
+        self.base = Path(self.temp.name).resolve()
         self.repo = self.base / "repo"
         self.repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
@@ -72,6 +72,16 @@ class PublicReadinessAuditTests(unittest.TestCase):
         self.assertNotIn(fake, combined)
         self.assertNotIn("config.txt", combined)
 
+    def test_uncommitted_tracked_secret_is_detected_as_tree_source(self):
+        self.commit("config.txt", "clean configuration\n")
+        fake = "ghp_" + "u" * 36
+        (self.repo / "config.txt").write_text(fake + "\n", encoding="utf-8")
+        result, private, summary, _, _ = self.run_audit()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(summary["counts"]["github_token"], 1)
+        self.assertTrue(any(item["source"] == "tree" for item in private["findings"]))
+        self.assertNotIn(fake, result.stdout + result.stderr + json.dumps(private) + json.dumps(summary))
+
     def test_private_key_is_categorized_without_content(self):
         marker = "-----BEGIN " + "PRIVATE KEY-----\nPRIVATE\n"
         self.commit("fixture.txt", marker)
@@ -126,6 +136,19 @@ class PublicReadinessAuditTests(unittest.TestCase):
         self.assertEqual(summary["verdict"], "review_required")
         self.assertGreater(summary["severity_counts"]["review"], 0)
 
+    def test_farpilot_identifiers_and_ssh_key_bodies_require_review(self):
+        host_id = "host_" + "1" * 32
+        key_body = "ssh-" + "ed25519 " + "A" * 48
+        self.commit("metadata.txt", host_id + "\n" + key_body + "\n")
+        result, private, summary, _, _ = self.run_audit()
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(summary["verdict"], "review_required")
+        self.assertEqual(summary["counts"]["farpilot_identifier"], 1)
+        self.assertEqual(summary["counts"]["ssh_public_key_body"], 1)
+        combined = json.dumps(private) + json.dumps(summary) + result.stdout + result.stderr
+        self.assertNotIn(host_id, combined)
+        self.assertNotIn(key_body, combined)
+
     def test_binary_blob_is_handled_without_leaking_bytes(self):
         self.commit("binary.dat", b"\x00\xff\xfe" + b"binary" * 100)
         result, private, summary, _, _ = self.run_audit()
@@ -158,12 +181,19 @@ class PublicReadinessAuditTests(unittest.TestCase):
         self.assertIn("symlink", result.stderr.lower())
 
         real_parent = self.base / "real-parent"
-        real_parent.mkdir()
+        nested = real_parent / "existing-child"
+        nested.mkdir(parents=True)
         linked_parent = self.base / "linked-parent"
         linked_parent.symlink_to(real_parent, target_is_directory=True)
         result, _, _, _, _ = self.run_audit(
-            private=linked_parent / "private.json",
+            private=linked_parent / "existing-child" / "private.json",
             summary=self.base / "summary3.json",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("symlink", result.stderr.lower())
+        result, _, _, _, _ = self.run_audit(
+            private=self.base / "private4.json",
+            summary=linked_parent / "existing-child" / "summary.json",
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("symlink", result.stderr.lower())
