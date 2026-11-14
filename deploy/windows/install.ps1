@@ -7,13 +7,12 @@ param(
     [switch]$DryRun,
     [switch]$Uninstall,
     [switch]$PurgeState,
-    [switch]$ConfirmPurge,
     [int]$Retain = 3,
     [string]$LocalPackagePath,
     [string]$LocalPackageVersion,
     [string]$LocalPackageSha256,
     [string]$TestStateDirectory,
-    [ValidateSet('', 'DuringPathStateCapture', 'DuringManagedProcessStop', 'DuringTaskRemoval', 'DuringPathRemoval', 'AfterCurrentJunction', 'AfterBinJunction', 'AfterPathUpdate', 'DuringTaskUpdate', 'DuringTaskStart', 'DuringCleanup')]
+    [ValidateSet('', 'DuringPathStateCapture', 'DuringManagedProcessStop', 'DuringTaskRemoval', 'DuringPathRemoval', 'DuringAliasQuarantine', 'DuringReleaseQuarantine', 'DuringUninstallCleanup', 'AfterCurrentJunction', 'AfterBinJunction', 'AfterPathUpdate', 'DuringTaskUpdate', 'DuringTaskStart', 'DuringCleanup')]
     [string]$TestFailAfter = ''
 )
 
@@ -262,7 +261,7 @@ function Enter-InstallLock {
     $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
     while ($true) {
         try {
-            return [IO.File]::Open($Path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            return [IO.File]::Open($Path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Delete)
         } catch [IO.IOException] {
             if ([DateTime]::UtcNow -ge $deadline) {
                 throw 'Another FarPilot installation is already running'
@@ -674,6 +673,50 @@ function Invoke-UserPathRemoval {
     Publish-EnvironmentChange
 }
 
+function Get-FarPilotInstallState {
+    param([string]$Path, [string]$DefaultBinDir)
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return [PSCustomObject]@{ Exists = $false; Raw = $null; VisibleBin = (Get-CanonicalPath $DefaultBinDir) }
+    }
+    if (-not (Test-RegularFile $Path)) { throw "Refusing unsafe FarPilot install-state file: $Path" }
+    $raw = Get-Content -LiteralPath $Path -Raw
+    $value = $raw | ConvertFrom-Json
+    Assert-ExactPropertySet -Value $value -Expected @('schema_version', 'visible_bin') -Label 'FarPilot install state'
+    if ([int]$value.schema_version -ne 1 -or [string]::IsNullOrWhiteSpace([string]$value.visible_bin)) {
+        throw 'FarPilot install state is invalid'
+    }
+    $visibleBin = Get-CanonicalPath ([string]$value.visible_bin)
+    if (-not [IO.Path]::IsPathRooted($visibleBin)) { throw 'FarPilot visible bin path must be absolute' }
+    return [PSCustomObject]@{ Exists = $true; Raw = $raw; VisibleBin = $visibleBin }
+}
+
+function Write-FarPilotInstallState {
+    param([string]$Path, [string]$VisibleBin)
+    $parent = Split-Path -Parent $Path
+    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    $temp = Join-Path $parent ('.install-state.' + [guid]::NewGuid().ToString('N') + '.json')
+    try {
+        [PSCustomObject]@{ schema_version = 1; visible_bin = (Get-CanonicalPath $VisibleBin) } |
+            ConvertTo-Json | Set-Content -LiteralPath $temp -Encoding UTF8
+        if (Test-Path -LiteralPath $Path) {
+            [IO.File]::Replace($temp, $Path, $null)
+        } else {
+            [IO.File]::Move($temp, $Path)
+        }
+    } finally {
+        Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Restore-FarPilotInstallState {
+    param([string]$Path, [object]$State)
+    if ($State.Exists) {
+        $State.Raw | Set-Content -LiteralPath $Path -Encoding UTF8
+    } else {
+        Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-FarPilotStartupTaskRemoval {
     param([object]$State)
     Invoke-TestFailure -Point 'DuringTaskRemoval'
@@ -695,7 +738,7 @@ function Assert-SafeUninstallDirectory {
 }
 
 function Get-FarPilotUninstallDeletionPlan {
-    param([string]$Root, [string]$ReleasesDir, [string]$CurrentDir, [string]$BinDir, [string]$LockPath)
+    param([string]$Root, [string]$ReleasesDir, [string]$CurrentDir, [string]$BinDir, [string]$LockPath, [string]$InstallStatePath)
     $aliases = @()
     foreach ($aliasSpec in @(
         [PSCustomObject]@{ Path = $CurrentDir; AllowLegacy = $false },
@@ -731,38 +774,96 @@ function Get-FarPilotUninstallDeletionPlan {
             throw "Refusing unsafe install lock during uninstall: $LockPath"
         }
     }
+    $metadata = @()
+    if (Test-Path -LiteralPath $InstallStatePath) {
+        if (-not (Test-RegularFile $InstallStatePath) -or -not (Test-PathInside -Path $InstallStatePath -Parent $Root)) {
+            throw "Refusing unsafe install state during uninstall: $InstallStatePath"
+        }
+        $metadata += $InstallStatePath
+    }
     return [PSCustomObject]@{
         Aliases = @($aliases)
         ReleaseEntries = @($releaseEntries)
         LegacyEntries = @($legacyEntries)
+        Metadata = @($metadata)
+        LockPath = $LockPath
         ReleasesDir = $ReleasesDir
     }
 }
 
-function Invoke-FarPilotManagedInstallStateRemoval {
+function Invoke-FarPilotUninstallQuarantine {
     param([object]$Plan)
-    foreach ($alias in @($Plan.Aliases)) {
-        if (-not (Test-Path -LiteralPath $alias)) { throw "Managed alias changed after uninstall preflight: $alias" }
-        $item = Get-Item -LiteralPath $alias -Force
-        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-            if ($item.LinkType -ne 'Junction') { throw "Managed alias became unsafe after preflight: $alias" }
-            Remove-Item -LiteralPath $alias -Force
-        } elseif ($item.PSIsContainer) {
-            Remove-Item -LiteralPath $alias -Recurse -Force
-        } else {
-            throw "Managed alias became unsafe after preflight: $alias"
+    $targets = @($Plan.Aliases)
+    if (Test-Path -LiteralPath $Plan.ReleasesDir) { $targets += [string]$Plan.ReleasesDir }
+    $targets += @($Plan.LegacyEntries)
+    $targets += @($Plan.Metadata)
+    if (Test-Path -LiteralPath $Plan.LockPath) { $targets += [string]$Plan.LockPath }
+    $seen = @{}
+    $moved = @()
+    try {
+        foreach ($target in $targets) {
+            $canonical = Get-CanonicalPath $target
+            if ($seen.ContainsKey($canonical)) { continue }
+            $seen[$canonical] = $true
+            if (-not (Test-Path -LiteralPath $target)) { throw "Managed uninstall target changed after preflight: $target" }
+            $parent = Split-Path -Parent $target
+            $leaf = Split-Path -Leaf $target
+            $quarantine = Join-Path $parent ('.farpilot-uninstall.' + [guid]::NewGuid().ToString('N') + '.' + $leaf)
+            if (Test-Path -LiteralPath $quarantine) { throw "FarPilot uninstall quarantine collision: $quarantine" }
+            Move-Item -LiteralPath $target -Destination $quarantine
+            $moved += [PSCustomObject]@{ Original = $target; Quarantine = $quarantine }
+            if (@($Plan.Aliases) -contains $target) { Invoke-TestFailure -Point 'DuringAliasQuarantine' }
+            if ($target -ieq [string]$Plan.ReleasesDir) { Invoke-TestFailure -Point 'DuringReleaseQuarantine' }
+        }
+    } catch {
+        $moveError = $_
+        $restoreErrors = @(Restore-FarPilotUninstallQuarantine -Entries $moved)
+        if ($restoreErrors.Count -ne 0) {
+            throw "FarPilot quarantine failed: $($moveError.Exception.Message). Quarantine rollback failed: $($restoreErrors -join '; ')"
+        }
+        throw $moveError
+    }
+    return @($moved)
+}
+
+function Restore-FarPilotUninstallQuarantine {
+    param([object[]]$Entries)
+    $errors = @()
+    $reverse = @($Entries)
+    [array]::Reverse($reverse)
+    foreach ($entry in $reverse) {
+        try {
+            if (Test-Path -LiteralPath $entry.Original) { throw "restore destination already exists: $($entry.Original)" }
+            if (Test-Path -LiteralPath $entry.Quarantine) {
+                Move-Item -LiteralPath $entry.Quarantine -Destination $entry.Original
+            }
+        } catch {
+            $errors += $_.Exception.Message
         }
     }
-    foreach ($path in @($Plan.ReleaseEntries) + @($Plan.LegacyEntries)) {
-        if (-not (Test-RegularDirectory $path)) { throw "Managed uninstall path changed after preflight: $path" }
-        Remove-Item -LiteralPath $path -Recurse -Force
-    }
-    if (Test-Path -LiteralPath $Plan.ReleasesDir) {
-        if (@(Get-ChildItem -LiteralPath $Plan.ReleasesDir -Force).Count -ne 0) {
-            throw "Release directory changed after uninstall preflight: $($Plan.ReleasesDir)"
+    return @($errors)
+}
+
+function Invoke-FarPilotUninstallQuarantineCleanup {
+    param([object[]]$Entries)
+    $errors = @()
+    foreach ($entry in @($Entries)) {
+        if (-not (Test-Path -LiteralPath $entry.Quarantine)) { continue }
+        try {
+            Invoke-TestFailure -Point 'DuringUninstallCleanup'
+            $item = Get-Item -LiteralPath $entry.Quarantine -Force
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                Remove-Item -LiteralPath $entry.Quarantine -Force
+            } elseif ($item.PSIsContainer) {
+                Remove-Item -LiteralPath $entry.Quarantine -Recurse -Force
+            } elseif ($item.PSIsContainer -eq $false) {
+                Remove-Item -LiteralPath $entry.Quarantine -Force
+            }
+        } catch {
+            $errors += "$($entry.Quarantine): $($_.Exception.Message)"
         }
-        Remove-Item -LiteralPath $Plan.ReleasesDir -Force
     }
+    return @($errors)
 }
 
 function Invoke-FarPilotUninstall {
@@ -772,12 +873,11 @@ function Invoke-FarPilotUninstall {
         [string]$CurrentDir,
         [string]$BinDir,
         [string]$LockPath,
+        [string]$InstallStatePath,
         [bool]$Purge,
-        [bool]$Confirmed,
         [bool]$Preview
     )
     Write-Warning 'Revoke FarPilot Host and device grants on the Gateway before or immediately after uninstalling.'
-    if ($Purge -and -not $Confirmed) { throw 'PurgeState requires explicit confirmation: type PURGE FARPILOT STATE' }
     if ($Preview) {
         Write-Step "Dry run: uninstall managed task, processes, PATH entries, junctions and releases under $Root"
         if ($Purge) { Write-Step 'Dry run: purge known Host identity and configuration files after confirmation' }
@@ -788,44 +888,57 @@ function Invoke-FarPilotUninstall {
         return
     }
     if (-not (Test-RegularDirectory $Root)) { throw "Refusing unsafe FarPilot root during uninstall: $Root" }
-    Get-FarPilotUninstallDeletionPlan -Root $Root -ReleasesDir $ReleasesDir -CurrentDir $CurrentDir -BinDir $BinDir -LockPath $LockPath | Out-Null
+    Get-FarPilotUninstallDeletionPlan -Root $Root -ReleasesDir $ReleasesDir -CurrentDir $CurrentDir -BinDir $BinDir -LockPath $LockPath -InstallStatePath $InstallStatePath | Out-Null
     $taskState = Get-FarPilotStartupTaskState
     $pathState = Get-UserPathState
     $processState = @(Get-ManagedFarPilotProcessState)
     $lock = Enter-InstallLock $LockPath
-    $deletionPlan = Get-FarPilotUninstallDeletionPlan -Root $Root -ReleasesDir $ReleasesDir -CurrentDir $CurrentDir -BinDir $BinDir -LockPath $LockPath
+    $deletionPlan = Get-FarPilotUninstallDeletionPlan -Root $Root -ReleasesDir $ReleasesDir -CurrentDir $CurrentDir -BinDir $BinDir -LockPath $LockPath -InstallStatePath $InstallStatePath
     $taskMutated = $false
     $pathMutated = $false
+    $quarantined = @()
+    $committed = $false
     try {
         try {
             $taskMutated = [bool]$taskState.Exists
             Invoke-FarPilotStartupTaskStop -State $taskState
             Invoke-ManagedFarPilotProcessStop -ProcessState $processState -ReleasesDir $ReleasesDir
+            $quarantined = @(Invoke-FarPilotUninstallQuarantine -Plan $deletionPlan)
             Invoke-FarPilotStartupTaskRemoval -State $taskState
             $pathMutated = $true
             Invoke-UserPathRemoval -ReleasesDir $ReleasesDir -Aliases @($CurrentDir, $BinDir)
+            $committed = $true
         } catch {
             $failure = $_
-            $restoreErrors = @()
+            $restoreErrors = @(Restore-FarPilotUninstallQuarantine -Entries $quarantined)
             if ($pathMutated) { try { Restore-UserPath -State $pathState } catch { $restoreErrors += "PATH: $($_.Exception.Message)" } }
             if ($taskMutated) { try { Restore-FarPilotStartupTask -State $taskState } catch { $restoreErrors += "task: $($_.Exception.Message)" } }
-            $remaining = @($CurrentDir, $BinDir, $ReleasesDir) | Where-Object { Test-Path -LiteralPath $_ }
-            $message = "FarPilot uninstall stopped before file deletion: $($failure.Exception.Message). Remaining managed paths: $($remaining -join ', ')"
+            $remaining = @($CurrentDir, $BinDir, $ReleasesDir, $InstallStatePath) | Where-Object { Test-Path -LiteralPath $_ }
+            $message = "FarPilot uninstall transaction failed: $($failure.Exception.Message). Remaining managed paths: $($remaining -join ', ')"
             if ($restoreErrors.Count -ne 0) { $message += ". Restore errors: $($restoreErrors -join '; ')" }
             throw $message
         }
-        Invoke-FarPilotManagedInstallStateRemoval -Plan $deletionPlan
     } finally {
         if ($null -ne $lock) { $lock.Dispose() }
-        Remove-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue
     }
+    if (-not $committed) { throw 'FarPilot uninstall did not reach commit' }
+    $cleanupErrors = @(Invoke-FarPilotUninstallQuarantineCleanup -Entries $quarantined)
     if ($Purge) {
+        $knownState = @()
         foreach ($known in @('host-identity.json', 'host.json', 'host-config.json')) {
             $path = Join-Path $Root $known
             if (Test-Path -LiteralPath $path) {
                 if (-not (Test-RegularFile $path)) { throw "Refusing unsafe FarPilot state file: $path" }
-                Remove-Item -LiteralPath $path -Force
+                $knownState += $path
             }
+        }
+        if ($knownState.Count -ne 0) {
+            $purgePlan = [PSCustomObject]@{
+                Aliases = @($knownState); ReleaseEntries = @(); LegacyEntries = @(); Metadata = @()
+                LockPath = (Join-Path $Root '.no-purge-lock'); ReleasesDir = (Join-Path $Root '.no-purge-releases')
+            }
+            $purgeQuarantine = @(Invoke-FarPilotUninstallQuarantine -Plan $purgePlan)
+            $cleanupErrors += @(Invoke-FarPilotUninstallQuarantineCleanup -Entries $purgeQuarantine)
         }
     }
     $remainingState = @(Get-ChildItem -LiteralPath $Root -Force -ErrorAction SilentlyContinue)
@@ -835,6 +948,9 @@ function Invoke-FarPilotUninstall {
         Write-Step "Preserved FarPilot state: $($remainingState.Name -join ', ')"
     }
     Write-Step 'FarPilot uninstall completed.'
+    if ($cleanupErrors.Count -ne 0) {
+        Write-Warning "FarPilot uninstall completed; cleanup incomplete: $($cleanupErrors -join '; ')"
+    }
 }
 
 function Invoke-OldReleaseCleanup {
@@ -863,7 +979,6 @@ if ($env:OS -ne 'Windows_NT') { throw 'install.ps1 supports Windows only' }
 if (-not [Environment]::Is64BitOperatingSystem) { throw 'FarPilot requires 64-bit Windows' }
 if ($Retain -lt 1) { throw 'Retain must be at least 1' }
 if ($PurgeState -and -not $Uninstall) { throw 'PurgeState requires Uninstall' }
-if ($ConfirmPurge -and -not $Uninstall) { throw 'ConfirmPurge requires Uninstall' }
 
 $localFields = @($LocalPackagePath, $LocalPackageVersion, $LocalPackageSha256 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
 if ($localFields -notin @(0, 3)) { throw 'Local package mode requires path, version, and SHA-256 together' }
@@ -892,29 +1007,20 @@ if ($Uninstall) {
         if ($PSBoundParameters.ContainsKey($installOnly)) { throw "$installOnly cannot be used with Uninstall" }
     }
     if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw 'LOCALAPPDATA is not set' }
-    if ($ConfirmPurge -and -not $script:UseTestAdapters) {
-        throw 'ConfirmPurge is available only through the guarded installer test adapter'
-    }
-    $purgeConfirmed = $false
     if ($PurgeState) {
-        if ($script:UseTestAdapters) {
-            if (-not $ConfirmPurge) { throw 'PurgeState requires explicit confirmation' }
-            $purgeConfirmed = $true
-        } else {
-            $confirmation = Read-Host 'Type PURGE FARPILOT STATE to permanently remove Host identity and configuration'
-            if ($confirmation -cne 'PURGE FARPILOT STATE') { throw 'PurgeState confirmation did not match' }
-            $purgeConfirmed = $true
-        }
+        $confirmation = Read-Host 'Type PURGE FARPILOT STATE to permanently remove Host identity and configuration'
+        if ($confirmation -cne 'PURGE FARPILOT STATE') { throw 'PurgeState confirmation did not match' }
     }
     $uninstallRoot = Get-CanonicalPath (Join-Path $env:LOCALAPPDATA 'FarPilot')
     $uninstallReleases = Join-Path $uninstallRoot 'releases'
     $uninstallCurrent = Join-Path $uninstallRoot 'current'
-    $uninstallBin = Join-Path $uninstallRoot 'bin'
+    $uninstallStatePath = Join-Path $uninstallRoot 'install-state.json'
+    $uninstallState = Get-FarPilotInstallState -Path $uninstallStatePath -DefaultBinDir (Join-Path $uninstallRoot 'bin')
+    $uninstallBin = $uninstallState.VisibleBin
     $uninstallLock = Join-Path $uninstallRoot 'install.lock'
-    Invoke-FarPilotUninstall -Root $uninstallRoot -ReleasesDir $uninstallReleases -CurrentDir $uninstallCurrent -BinDir $uninstallBin -LockPath $uninstallLock -Purge ([bool]$PurgeState) -Confirmed $purgeConfirmed -Preview ([bool]$DryRun)
+    Invoke-FarPilotUninstall -Root $uninstallRoot -ReleasesDir $uninstallReleases -CurrentDir $uninstallCurrent -BinDir $uninstallBin -LockPath $uninstallLock -InstallStatePath $uninstallStatePath -Purge ([bool]$PurgeState) -Preview ([bool]$DryRun)
     return
 }
-if ($ConfirmPurge) { throw 'ConfirmPurge requires Uninstall and PurgeState' }
 $requestedVersion = Normalize-Version $Version
 
 if ($localMode) {
@@ -963,6 +1069,7 @@ $ReleaseName = "$requestedVersion-$TargetTriple"
 $ReleaseDir = Join-Path $ReleasesDir $ReleaseName
 $ReleaseExe = Join-Path $ReleaseDir 'farpilot.exe'
 $LockPath = Join-Path $Root 'install.lock'
+$InstallStatePath = Join-Path $Root 'install-state.json'
 
 New-Item -ItemType Directory -Force -Path $Root, $ReleasesDir | Out-Null
 $lock = Enter-InstallLock $LockPath
@@ -1007,12 +1114,14 @@ try {
     $taskState = Get-FarPilotStartupTaskState
     $pathState = Get-UserPathState
     $processState = @(Get-ManagedFarPilotProcessState)
+    $installState = Get-FarPilotInstallState -Path $InstallStatePath -DefaultBinDir (Join-Path $Root 'bin')
 
     $releaseCreated = $false
     $taskStopAttempted = $false
     $currentAttempted = $false
     $binAttempted = $false
     $pathAttempted = $false
+    $installStateAttempted = $false
     try {
         $taskStopAttempted = $true
         Invoke-FarPilotStartupTaskStop $taskState
@@ -1030,9 +1139,14 @@ try {
         $pathAttempted = $true
         Invoke-UserPathUpdate -Entry $ReleaseDir -ReleasesDir $ReleasesDir -Aliases @($CurrentDir, $BinDir)
         Invoke-FarPilotStartupTaskUpdate -Executable (Join-Path $BinDir 'farpilot.exe') -PreviousState $taskState -CreateTask (-not $NoStartupTask)
+        $installStateAttempted = $true
+        Write-FarPilotInstallState -Path $InstallStatePath -VisibleBin $BinDir
     } catch {
         $activationError = $_
         $rollbackErrors = @()
+        if ($installStateAttempted) {
+            try { Restore-FarPilotInstallState -Path $InstallStatePath -State $installState } catch { $rollbackErrors += "install state: $($_.Exception.Message)" }
+        }
         if ($taskStopAttempted) {
             try { Restore-FarPilotStartupTask -State $taskState } catch { $rollbackErrors += "startup task: $($_.Exception.Message)" }
         }

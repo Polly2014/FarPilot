@@ -84,7 +84,8 @@ function Invoke-InstallerProcess {
         [switch]$DryRun,
         [switch]$EnableStartupTask,
         [string]$FailAfter = '',
-        [int]$Retain = 3
+        [int]$Retain = 3,
+        [string]$InstallDir = ''
     )
     $testState = Initialize-TestState $LocalAppData
     $arguments = @(
@@ -98,6 +99,7 @@ function Invoke-InstallerProcess {
         '-Retain', [string]$Retain
     )
     if (-not $EnableStartupTask) { $arguments += '-NoStartupTask' }
+    if (-not [string]::IsNullOrWhiteSpace($InstallDir)) { $arguments += @('-InstallDir', $InstallDir) }
     if ($DryRun) { $arguments += '-DryRun' }
     if (-not [string]::IsNullOrWhiteSpace($FailAfter)) { $arguments += @('-TestFailAfter', $FailAfter) }
     $previousLocalAppData = $env:LOCALAPPDATA
@@ -118,7 +120,7 @@ function Invoke-UninstallerProcess {
     param(
         [string]$LocalAppData,
         [switch]$PurgeState,
-        [switch]$ConfirmPurge,
+        [string]$PurgeConfirmation = '',
         [switch]$DryRun,
         [string]$FailAfter = '',
         [string[]]$AdditionalArguments = @()
@@ -132,7 +134,6 @@ function Invoke-UninstallerProcess {
         '-TestStateDirectory', $testState
     )
     if ($PurgeState) { $arguments += '-PurgeState' }
-    if ($ConfirmPurge) { $arguments += '-ConfirmPurge' }
     if ($DryRun) { $arguments += '-DryRun' }
     if (-not [string]::IsNullOrWhiteSpace($FailAfter)) { $arguments += @('-TestFailAfter', $FailAfter) }
     $arguments += $AdditionalArguments
@@ -141,7 +142,11 @@ function Invoke-UninstallerProcess {
     try {
         $env:LOCALAPPDATA = $LocalAppData
         $env:FARPILOT_INSTALLER_TEST_MODE = '1'
-        $output = & $PowerShellExe @arguments 2>&1 | Out-String
+        if ($PurgeState) {
+            $output = $PurgeConfirmation | & $PowerShellExe @arguments 2>&1 | Out-String
+        } else {
+            $output = & $PowerShellExe @arguments 2>&1 | Out-String
+        }
         $exitCode = $LASTEXITCODE
     } finally {
         $env:LOCALAPPDATA = $previousLocalAppData
@@ -220,10 +225,11 @@ function Install-Fixture {
         [string]$Version,
         [switch]$EnableStartupTask,
         [string]$FailAfter = '',
-        [int]$Retain = 3
+        [int]$Retain = 3,
+        [string]$InstallDir = ''
     )
     $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $Package).Hash.ToLowerInvariant()
-    $result = Invoke-InstallerProcess -LocalAppData $Scenario -PackagePath $Package -Version $Version -Sha256 $sha -EnableStartupTask:$EnableStartupTask -FailAfter $FailAfter -Retain $Retain
+    $result = Invoke-InstallerProcess -LocalAppData $Scenario -PackagePath $Package -Version $Version -Sha256 $sha -EnableStartupTask:$EnableStartupTask -FailAfter $FailAfter -Retain $Retain -InstallDir $InstallDir
     if ($result.ExitCode -ne 0) { throw "installer failed for $Version`: $($result.Output)" }
     return $result
 }
@@ -576,6 +582,48 @@ try {
     Assert-Equal -Expected 'identity-upgrade' -Actual (Get-Content -LiteralPath (Join-Path $upgradeRoot 'host-identity.json') -Raw).Trim() -Message 'upgrade uninstall removed identity'
     Assert-Equal -Expected 'config-upgrade' -Actual (Get-Content -LiteralPath (Join-Path $upgradeRoot 'host.json') -Raw).Trim() -Message 'upgrade uninstall removed config'
 
+    # A custom visible bin is persisted, upgraded, and removed without touching default/unrelated paths.
+    $customInstall = Initialize-ScenarioRoot 'custom-install-dir'
+    $customBin = Join-Path $customInstall 'Visible FarPilot Bin'
+    $customSibling = Join-Path $customInstall 'unrelated-sibling'
+    New-Item -ItemType Directory -Path $customSibling | Out-Null
+    'sibling-sentinel' | Set-Content -LiteralPath (Join-Path $customSibling 'keep.txt')
+    Install-Fixture -Scenario $customInstall -Package $packages['0.2.0'] -Version '0.2.0' -InstallDir $customBin | Out-Null
+    Install-Fixture -Scenario $customInstall -Package $packages['0.2.1'] -Version '0.2.1' -InstallDir $customBin | Out-Null
+    $customRoot = Join-Path $customInstall 'FarPilot'
+    $customState = Get-Content -LiteralPath (Join-Path $customRoot 'install-state.json') -Raw | ConvertFrom-Json
+    Assert-Equal -Expected ([IO.Path]::GetFullPath($customBin).TrimEnd('\')) -Actual ([string]$customState.visible_bin) -Message 'custom visible bin was not persisted'
+    $defaultBin = Join-Path $customRoot 'bin'
+    New-Item -ItemType Directory -Path $defaultBin | Out-Null
+    'default-bin-sentinel' | Set-Content -LiteralPath (Join-Path $defaultBin 'keep.txt')
+    $customUninstall = Invoke-UninstallerProcess -LocalAppData $customInstall
+    Assert-Equal -Expected 0 -Actual $customUninstall.ExitCode -Message "custom uninstall failed: $($customUninstall.Output)"
+    Assert-True (-not (Test-Path -LiteralPath $customBin)) 'custom visible bin junction remained after uninstall'
+    Assert-Equal -Expected 'sibling-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $customSibling 'keep.txt') -Raw).Trim() -Message 'custom uninstall changed unrelated sibling'
+    Assert-Equal -Expected 'default-bin-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $defaultBin 'keep.txt') -Raw).Trim() -Message 'custom uninstall removed unrelated default bin'
+
+    # Corrupt/external install metadata fails before task, PATH, alias, or release mutation.
+    $corruptState = Initialize-ScenarioRoot 'corrupt-install-state'
+    $corruptBin = Join-Path $corruptState 'managed-custom-bin'
+    Install-Fixture -Scenario $corruptState -Package $packages['0.2.0'] -Version '0.2.0' -InstallDir $corruptBin -EnableStartupTask | Out-Null
+    $corruptRoot = Join-Path $corruptState 'FarPilot'
+    $externalMetadataTarget = Join-Path $corruptState 'external-unmanaged-bin'
+    New-Item -ItemType Directory -Path $externalMetadataTarget | Out-Null
+    'external-state' | Set-Content -LiteralPath (Join-Path $externalMetadataTarget 'keep.txt')
+    [PSCustomObject]@{ schema_version = 1; visible_bin = $externalMetadataTarget } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $corruptRoot 'install-state.json') -Encoding UTF8
+    $corruptTask = Get-TestState -LocalAppData $corruptState -Name 'task'
+    $corruptTask.Running = $true
+    Write-TestStateFile -LocalAppData $corruptState -Name 'task' -Value $corruptTask
+    $corruptTaskJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $corruptState) 'task.json') -Raw
+    $corruptPathJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $corruptState) 'path.json') -Raw
+    $corruptCurrent = Get-JunctionTarget (Join-Path $corruptRoot 'current')
+    $corruptUninstall = Invoke-UninstallerProcess -LocalAppData $corruptState
+    Assert-True ($corruptUninstall.ExitCode -ne 0) 'corrupt install-state unexpectedly uninstalled'
+    Assert-Equal -Expected $corruptCurrent -Actual (Get-JunctionTarget (Join-Path $corruptRoot 'current')) -Message 'corrupt install-state changed current'
+    Assert-Equal -Expected $corruptTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $corruptState) 'task.json') -Raw) -Message 'corrupt install-state changed task'
+    Assert-Equal -Expected $corruptPathJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $corruptState) 'path.json') -Raw) -Message 'corrupt install-state changed PATH'
+    Assert-Equal -Expected 'external-state' -Actual (Get-Content -LiteralPath (Join-Path $externalMetadataTarget 'keep.txt') -Raw).Trim() -Message 'corrupt install-state touched external target'
+
     # Purge mode validation fails before mutation when Uninstall or confirmation is missing.
     $purgeValidation = Initialize-ScenarioRoot 'purge-validation'
     Install-Fixture -Scenario $purgeValidation -Package $packages['0.2.0'] -Version '0.2.0' | Out-Null
@@ -600,7 +648,7 @@ try {
     'config-confirmed' | Set-Content -LiteralPath (Join-Path $confirmedRoot 'host.json')
     'legacy-config-confirmed' | Set-Content -LiteralPath (Join-Path $confirmedRoot 'host-config.json')
     'preserve-unknown' | Set-Content -LiteralPath (Join-Path $confirmedRoot 'operator-note.txt')
-    $confirmedResult = Invoke-UninstallerProcess -LocalAppData $confirmedPurge -PurgeState -ConfirmPurge
+    $confirmedResult = Invoke-UninstallerProcess -LocalAppData $confirmedPurge -PurgeState -PurgeConfirmation 'PURGE FARPILOT STATE'
     Assert-Equal -Expected 0 -Actual $confirmedResult.ExitCode -Message "confirmed purge failed: $($confirmedResult.Output)"
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $confirmedRoot 'host-identity.json'))) 'confirmed purge left identity'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $confirmedRoot 'host.json'))) 'confirmed purge left config'
@@ -609,7 +657,7 @@ try {
     Assert-True ($confirmedResult.Output -match 'operator-note') 'confirmed purge did not report preserved unknown state'
 
     # Uninstall failures stop before broader destructive cleanup.
-    foreach ($failurePoint in @('DuringManagedProcessStop', 'DuringTaskRemoval', 'DuringPathRemoval')) {
+    foreach ($failurePoint in @('DuringManagedProcessStop', 'DuringAliasQuarantine', 'DuringReleaseQuarantine', 'DuringTaskRemoval', 'DuringPathRemoval')) {
         $failedUninstall = Initialize-ScenarioRoot ("uninstall-failure-" + $failurePoint)
         Install-Fixture -Scenario $failedUninstall -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
         $failedRoot = Join-Path $failedUninstall 'FarPilot'
@@ -629,6 +677,22 @@ try {
         Assert-Equal -Expected $failedPathJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $failedUninstall) 'path.json') -Raw) -Message "$failurePoint changed PATH"
         Assert-True ($failure.Output -match '(?i)remaining|failed') "$failurePoint did not report remaining managed state"
     }
+
+    # Post-commit quarantine cleanup failure reports success with safe retained artifacts.
+    $uninstallCleanup = Initialize-ScenarioRoot 'uninstall-cleanup-incomplete'
+    Install-Fixture -Scenario $uninstallCleanup -Package $packages['0.2.0'] -Version '0.2.0' | Out-Null
+    $uninstallCleanupRoot = Join-Path $uninstallCleanup 'FarPilot'
+    'cleanup-identity' | Set-Content -LiteralPath (Join-Path $uninstallCleanupRoot 'host-identity.json')
+    'cleanup-config' | Set-Content -LiteralPath (Join-Path $uninstallCleanupRoot 'host.json')
+    $uninstallCleanupResult = Invoke-UninstallerProcess -LocalAppData $uninstallCleanup -FailAfter 'DuringUninstallCleanup'
+    Assert-Equal -Expected 0 -Actual $uninstallCleanupResult.ExitCode -Message "uninstall cleanup failure rolled back committed uninstall: $($uninstallCleanupResult.Output)"
+    Assert-True ($uninstallCleanupResult.Output -match 'cleanup incomplete') 'uninstall cleanup failure warning was not reported'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $uninstallCleanupRoot 'current'))) 'cleanup failure restored current after commit'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $uninstallCleanupRoot 'bin'))) 'cleanup failure restored bin after commit'
+    Assert-Equal -Expected 'cleanup-identity' -Actual (Get-Content -LiteralPath (Join-Path $uninstallCleanupRoot 'host-identity.json') -Raw).Trim() -Message 'cleanup failure changed identity'
+    Assert-Equal -Expected 'cleanup-config' -Actual (Get-Content -LiteralPath (Join-Path $uninstallCleanupRoot 'host.json') -Raw).Trim() -Message 'cleanup failure changed config'
+    $retainedQuarantine = @(Get-ChildItem -LiteralPath $uninstallCleanup -Force -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '.farpilot-uninstall.*' })
+    Assert-True ($retainedQuarantine.Count -gt 0) 'cleanup failure did not retain safe quarantine artifacts'
 
     # Dry-run uninstall and mixed install arguments are rejected or non-mutating by contract.
     $dryUninstall = Initialize-ScenarioRoot 'uninstall-dry-run'
@@ -710,6 +774,8 @@ try {
     Assert-True ($source -match 'Test-FileDigest\s+-Path\s+\$ReleaseExe') 'same-version release digest verification is missing'
     Assert-True ($source -match 'function\s+Assert-ManagedReleaseTarget') 'managed alias target validation is missing'
     Assert-True ($source -match 'function\s+Test-JunctionReleaseReference') 'rollback alias reference guard is missing'
+    Assert-True ($source -notmatch '\[switch\]\$ConfirmPurge') 'public ConfirmPurge bypass parameter must not exist'
+    Assert-True ($source -match 'Read-Host.+PURGE FARPILOT STATE') 'typed purge confirmation boundary is missing'
 
     Write-Output 'FarPilot Windows installer behavior verified'
 } finally {
