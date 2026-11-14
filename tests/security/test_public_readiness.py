@@ -38,25 +38,24 @@ class PublicReadinessAuditTests(unittest.TestCase):
         subprocess.run(["git", "rm", "-q", name], cwd=self.repo, check=True)
         subprocess.run(["git", "commit", "-qm", "remove fixture"], cwd=self.repo, check=True)
 
-    def run_audit(self, repo=None, private=None, summary=None):
+    def run_audit(self, repo=None, private=None, summary=None, max_blob_bytes=None):
         repo = repo or self.repo
         private = private or self.base / "private.json"
         summary = summary or self.base / "summary.json"
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-I",
-                str(SCANNER),
-                "--repo",
-                str(repo),
-                "--private-report",
-                str(private),
-                "--summary",
-                str(summary),
-            ],
-            capture_output=True,
-            text=True,
-        )
+        command = [
+            sys.executable,
+            "-I",
+            str(SCANNER),
+            "--repo",
+            str(repo),
+            "--private-report",
+            str(private),
+            "--summary",
+            str(summary),
+        ]
+        if max_blob_bytes is not None:
+            command.extend(["--max-blob-bytes", str(max_blob_bytes)])
+        result = subprocess.run(command, capture_output=True, text=True)
         private_data = json.loads(private.read_text()) if private.exists() else None
         summary_data = json.loads(summary.read_text()) if summary.exists() else None
         return result, private_data, summary_data, private, summary
@@ -98,6 +97,48 @@ class PublicReadinessAuditTests(unittest.TestCase):
         self.assertEqual(private["findings"], [])
         self.assertEqual(stat.S_IMODE(private_path.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(summary_path.stat().st_mode), 0o600)
+
+    def test_existing_report_parent_modes_are_preserved(self):
+        self.commit("README.md", "clean\n")
+        shared = self.base / "shared"
+        shared.mkdir(mode=0o755)
+        os.chmod(shared, 0o755)
+        result, _, _, private, summary = self.run_audit(
+            private=shared / "private.json",
+            summary=shared / "summary.json",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(stat.S_IMODE(shared.stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE(private.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(summary.stat().st_mode), 0o600)
+
+        sticky = self.base / "sticky"
+        sticky.mkdir(mode=0o777)
+        os.chmod(sticky, 0o1777)
+        result, _, _, _, _ = self.run_audit(
+            private=sticky / "private.json",
+            summary=sticky / "summary.json",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(stat.S_IMODE(sticky.stat().st_mode), 0o1777)
+
+    def test_large_blob_is_redacted_and_requires_review(self):
+        secret = "ghp_" + "z" * 36
+        content = (secret + "\n").encode() + b"X" * 1024
+        self.commit("large.txt", content)
+        result, private, summary, _, _ = self.run_audit(max_blob_bytes=64)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(summary["verdict"], "review_required")
+        self.assertEqual(summary["counts"]["large_blob"], 1)
+        self.assertNotIn("github_token", summary["counts"])
+        combined = result.stdout + result.stderr + json.dumps(private) + json.dumps(summary)
+        self.assertNotIn(secret, combined)
+        self.assertTrue(any(item["category"] == "large_blob" for item in private["findings"]))
+
+    def test_non_blob_git_objects_are_not_counted_as_scanned_blobs(self):
+        self.commit("README.md", "one blob\n")
+        _, _, summary, _, _ = self.run_audit()
+        self.assertEqual(summary["objects_scanned"], 1)
 
     def test_risky_tracked_filenames_are_blocking(self):
         for name in ["prod.env", "certificate.pfx", "archive.p12", "state.sqlite", "cache.db"]:

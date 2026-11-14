@@ -18,6 +18,7 @@ import sys
 import tempfile
 
 SCANNER_VERSION = "1"
+MAX_BLOB_BYTES = 8 * 1024 * 1024
 
 PATTERNS = {
     "private_key": re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
@@ -46,6 +47,7 @@ SEVERITY = {
     "internal_hostname": "review",
     "farpilot_identifier": "review",
     "ssh_public_key_body": "review",
+    "large_blob": "review",
 }
 
 RISKY_SUFFIXES = (".pfx", ".p12", ".sqlite", ".db")
@@ -134,7 +136,7 @@ def finding(category: str, source: str, object_id: str, path: str) -> dict[str, 
     }
 
 
-def reachable_blobs(repo: Path) -> dict[str, list[str]]:
+def reachable_blobs(repo: Path) -> dict[str, tuple[list[str], int]]:
     output = run_git(repo, "rev-list", "--objects", "--all")
     candidates: dict[str, set[str]] = {}
     for line in output.splitlines():
@@ -142,11 +144,31 @@ def reachable_blobs(repo: Path) -> dict[str, list[str]]:
         candidates.setdefault(object_id, set())
         if separator:
             candidates[object_id].add(path)
-    blobs: dict[str, list[str]] = {}
-    for object_id, paths in candidates.items():
-        object_type = run_git(repo, "cat-file", "-t", object_id).strip()
+    object_ids = sorted(candidates)
+    if not object_ids:
+        return {}
+    checked = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "cat-file",
+            "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+        ],
+        input="\n".join(object_ids) + "\n",
+        capture_output=True,
+        text=True,
+    )
+    if checked.returncode != 0:
+        raise RuntimeError(f"git cat-file --batch-check failed: {checked.stderr.strip()}")
+    blobs: dict[str, tuple[list[str], int]] = {}
+    for line in checked.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 3:
+            raise RuntimeError("git cat-file --batch-check returned malformed metadata")
+        object_id, object_type, raw_size = fields
         if object_type == "blob":
-            blobs[object_id] = sorted(paths) or ["<unknown>"]
+            blobs[object_id] = (sorted(candidates[object_id]) or ["<unknown>"], int(raw_size))
     return blobs
 
 
@@ -196,7 +218,9 @@ def hash_worktree_blob(repo: Path, data: bytes) -> str:
 
 
 def scan_tracked_content(
-    repo: Path, history_blobs: dict[str, list[str]]
+    repo: Path,
+    history_blobs: dict[str, tuple[list[str], int]],
+    max_blob_bytes: int,
 ) -> list[dict[str, str]]:
     raw = run_git(repo, "ls-files", "-z")
     results: list[dict[str, str]] = []
@@ -224,7 +248,23 @@ def scan_tracked_content(
                 )
             )
             continue
-        data = path.read_bytes()
+        if metadata.st_size > max_blob_bytes:
+            object_id = run_git(repo, "hash-object", "--", relative).strip()
+            if object_id not in history_blobs:
+                results.append(finding("large_blob", "tree", object_id, relative))
+            continue
+        with path.open("rb") as source:
+            data = source.read(max_blob_bytes + 1)
+        if len(data) > max_blob_bytes:
+            results.append(
+                finding(
+                    "large_blob",
+                    "tree",
+                    hashlib.sha256(relative.encode()).hexdigest(),
+                    relative,
+                )
+            )
+            continue
         object_id = hash_worktree_blob(repo, data)
         if object_id in history_blobs:
             continue
@@ -258,13 +298,25 @@ def gitleaks_status() -> dict[str, object]:
     }
 
 
+def create_private_parents(parent: Path) -> None:
+    missing = []
+    cursor = parent
+    while not cursor.exists():
+        missing.append(cursor)
+        if cursor == cursor.parent:
+            break
+        cursor = cursor.parent
+    for directory in reversed(missing):
+        directory.mkdir(mode=0o700)
+        os.chmod(directory, 0o700)
+
+
 def atomic_json(path: Path, value: object) -> None:
     if has_unsafe_output_symlink(path):
         raise ValueError("audit output path or parent must not be a symlink")
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    create_private_parents(path.parent)
     if has_unsafe_output_symlink(path):
         raise ValueError("audit output path or parent must not be a symlink")
-    os.chmod(path.parent, 0o700)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         os.fchmod(descriptor, 0o600)
@@ -282,13 +334,21 @@ def atomic_json(path: Path, value: object) -> None:
             os.unlink(temporary)
 
 
-def audit(repo: Path) -> tuple[dict[str, object], dict[str, object]]:
+def audit(
+    repo: Path, max_blob_bytes: int
+) -> tuple[dict[str, object], dict[str, object]]:
     blobs = reachable_blobs(repo)
     findings: list[dict[str, str]] = []
-    for object_id, paths in sorted(blobs.items()):
+    for object_id, (paths, size) in sorted(blobs.items()):
+        if size > max_blob_bytes:
+            findings.append(finding("large_blob", "history", object_id, paths[0]))
+            continue
         data = run_git(repo, "cat-file", "blob", object_id, binary=True)
+        if len(data) > max_blob_bytes:
+            findings.append(finding("large_blob", "history", object_id, paths[0]))
+            continue
         findings.extend(scan_blob(data, object_id, paths, "history"))
-    findings.extend(scan_tracked_content(repo, blobs))
+    findings.extend(scan_tracked_content(repo, blobs, max_blob_bytes))
     findings.extend(scan_tracked_filenames(repo))
     findings = deduplicate_findings(findings)
     counts = Counter(item["category"] for item in findings)
@@ -327,14 +387,22 @@ def main() -> int:
     parser.add_argument("--repo", required=True, type=Path)
     parser.add_argument("--private-report", required=True, type=Path)
     parser.add_argument("--summary", required=True, type=Path)
+    parser.add_argument(
+        "--max-blob-bytes",
+        type=int,
+        default=MAX_BLOB_BYTES,
+        help=argparse.SUPPRESS,
+    )
     arguments = parser.parse_args()
     try:
+        if not 1 <= arguments.max_blob_bytes <= MAX_BLOB_BYTES:
+            raise ValueError(f"max blob bytes must be between 1 and {MAX_BLOB_BYTES}")
         repo = ensure_git_repository(arguments.repo)
         private_path = validate_output_path(arguments.private_report, repo)
         summary_path = validate_output_path(arguments.summary, repo)
         if private_path == summary_path:
             raise ValueError("private report and summary must be different paths")
-        private, summary = audit(repo)
+        private, summary = audit(repo, arguments.max_blob_bytes)
         atomic_json(private_path, private)
         atomic_json(summary_path, summary)
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as error:
