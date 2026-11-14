@@ -159,8 +159,8 @@ fn validate_template_tokens(
 #[cfg(test)]
 mod tests {
     use super::{
-        PairingPageContext, PairingPageRenderError, PairingPageState, render_pairing_page,
-        validate_template_tokens,
+        PairingPageContext, PairingPageRenderError, PairingPageState, TEMPLATE,
+        render_pairing_page, validate_template_tokens,
     };
 
     const TOKENS: &[(&str, usize)] = &[
@@ -282,6 +282,65 @@ mod tests {
                 &tokens
             ),
             Err(PairingPageRenderError::InvalidTemplateTokens)
+        );
+    }
+
+    #[test]
+    fn template_contains_approved_crt_and_accessibility_contract() {
+        for required in [
+            "FARPILOT // SECURE RELAY",
+            "授权远程终端",
+            "AUTHORIZE REMOTE TERMINAL",
+            "AUTH WINDOW",
+            "DEVICE_NAME",
+            "SSH_ED25519_PUBLIC_KEY",
+            "aria-live=\"polite\"",
+            "prefers-reduced-motion: reduce",
+            "min-height: 44px",
+            "@media (max-width: 360px)",
+            "<form id=\"pair-form\"",
+            "<label for=\"device-name\"",
+            "<input id=\"device-name\"",
+            "<label for=\"ssh-key\"",
+            "<textarea id=\"ssh-key\"",
+            "<button id=\"submit-button\"",
+            "<dl class=\"connection-data\"",
+            "<section id=\"terminal-state\" hidden",
+            "overflow-wrap: anywhere",
+            "pointer-events: none",
+        ] {
+            assert!(TEMPLATE.contains(required), "missing {required}");
+        }
+        assert!(!TEMPLATE.contains("onclick="));
+    }
+
+    #[test]
+    fn template_has_no_external_resource_or_dangerous_dom_sink() {
+        for forbidden in [
+            "<script src=",
+            "<link rel=\"stylesheet\"",
+            "http://",
+            "https://",
+            "innerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+            "eval(",
+            "new Function",
+            "<img ",
+            "<iframe ",
+            "<link rel=\"prefetch\"",
+        ] {
+            assert!(!TEMPLATE.contains(forbidden), "forbidden {forbidden}");
+        }
+    }
+
+    #[test]
+    fn rendered_ready_page_stays_below_size_ceiling() {
+        let page = render_pairing_page(PairingPageState::Ready(context())).unwrap();
+        assert!(
+            page.body.len() < 96 * 1024,
+            "page was {} bytes",
+            page.body.len()
         );
     }
 

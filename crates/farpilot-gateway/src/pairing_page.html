@@ -1,23 +1,356 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-page-state="{{FARPILOT_PAGE_STATE}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
   <title>FarPilot // Pair</title>
   <style nonce="{{FARPILOT_NONCE}}">
-    body { margin: 0; background: #020504; color: #78ff87; font-family: ui-monospace, monospace; }
+    :root {
+      color-scheme: dark;
+      --page: #020504;
+      --screen: #030704;
+      --screen-glow: #102515;
+      --bezel: #171d18;
+      --phosphor: #78ff87;
+      --heading: #d4ffd8;
+      --body: #9bcaa2;
+      --muted: #63866a;
+      --panel: rgba(4, 13, 6, 0.78);
+      --panel-border: #2e6939;
+      --input: #061008;
+      --input-border: #397747;
+      --error: #ff8f78;
+      --warning: #ffd56a;
+      --focus: #c4ffca;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { min-width: 0; background: var(--page); }
+
+    body {
+      margin: 0;
+      min-width: 0;
+      min-height: 100vh;
+      padding: 24px 16px;
+      display: grid;
+      place-items: center;
+      overflow-x: hidden;
+      background:
+        radial-gradient(circle at 50% 20%, rgba(32, 83, 42, 0.2), transparent 44%),
+        var(--page);
+      color: var(--body);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+        "Liberation Mono", "Courier New", monospace;
+    }
+
+    button, input, textarea { font: inherit; }
+
+    .crt {
+      position: relative;
+      isolation: isolate;
+      width: min(100%, 560px);
+      min-width: 0;
+      padding: clamp(18px, 5vw, 32px);
+      overflow: hidden;
+      border: 4px solid var(--bezel);
+      border-radius: 18px;
+      background: radial-gradient(circle at 50% 24%, var(--screen-glow), var(--screen) 70%);
+      box-shadow:
+        inset 0 0 42px rgba(0, 0, 0, 0.92),
+        0 0 24px rgba(90, 255, 110, 0.12);
+    }
+
+    .scanlines {
+      position: absolute;
+      inset: 0;
+      z-index: 3;
+      pointer-events: none;
+      opacity: 0.42;
+      background: repeating-linear-gradient(
+        0deg,
+        rgba(0, 0, 0, 0.14),
+        rgba(0, 0, 0, 0.14) 1px,
+        transparent 1px,
+        transparent 3px
+      );
+    }
+
+    .crt-content { position: relative; z-index: 2; min-width: 0; }
+
+    .telemetry,
+    .auth-window {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+    }
+
+    .online { color: var(--phosphor); white-space: nowrap; }
+
+    .rule {
+      height: 1px;
+      margin: 16px 0 22px;
+      background: var(--panel-border);
+      box-shadow: 0 0 8px rgba(120, 255, 135, 0.15);
+    }
+
+    h1, h2, p { margin-top: 0; }
+
+    h1 {
+      margin-bottom: 5px;
+      color: var(--heading);
+      font-size: clamp(1.42rem, 6vw, 2rem);
+      line-height: 1.15;
+      letter-spacing: 0.01em;
+      text-shadow: 0 0 7px rgba(120, 255, 135, 0.22);
+    }
+
+    .cursor {
+      display: inline-block;
+      color: #fff;
+      animation: cursor-pulse 1.35s steps(2, end) infinite;
+    }
+
+    .eyebrow,
+    label {
+      color: var(--muted);
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+    }
+
+    .eyebrow { margin-bottom: 18px; }
+
+    .connection-data {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      gap: 7px 14px;
+      margin: 0 0 10px;
+      padding: 13px;
+      border: 1px solid var(--panel-border);
+      background: var(--panel);
+      font-size: 0.78rem;
+      line-height: 1.5;
+    }
+
+    .connection-data dt { color: var(--phosphor); }
+
+    .connection-data dd {
+      min-width: 0;
+      margin: 0;
+      color: var(--heading);
+      overflow-wrap: anywhere;
+      word-break: normal;
+      user-select: text;
+    }
+
+    .security-note,
+    .field-help {
+      color: var(--body);
+      font-size: 0.76rem;
+      line-height: 1.55;
+    }
+
+    .security-note { margin-bottom: 20px; }
+
+    form { display: grid; gap: 7px; }
+
+    label { margin-top: 6px; }
+
+    input,
+    textarea {
+      width: 100%;
+      min-width: 0;
+      min-height: 44px;
+      border: 1px solid var(--input-border);
+      border-radius: 4px;
+      outline: none;
+      background: var(--input);
+      color: var(--heading);
+      caret-color: var(--phosphor);
+      padding: 10px 11px;
+      box-shadow: inset 0 0 10px rgba(70, 255, 110, 0.035);
+    }
+
+    textarea {
+      min-height: 104px;
+      resize: vertical;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    input:focus-visible,
+    textarea:focus-visible,
+    button:focus-visible {
+      border-color: var(--focus);
+      outline: 2px solid var(--focus);
+      outline-offset: 3px;
+      box-shadow: 0 0 14px rgba(120, 255, 135, 0.18);
+    }
+
+    input[aria-invalid="true"],
+    textarea[aria-invalid="true"] { border-color: var(--error); }
+
+    .field-help { margin: 0 0 4px; color: var(--muted); }
+
+    .field-error {
+      margin: 0 0 4px;
+      color: var(--error);
+      font-size: 0.76rem;
+      font-weight: 700;
+      line-height: 1.45;
+    }
+
+    button {
+      min-height: 44px;
+      margin-top: 9px;
+      border: 1px solid var(--phosphor);
+      border-radius: 4px;
+      background: rgba(11, 35, 17, 0.86);
+      color: var(--heading);
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      cursor: pointer;
+      box-shadow: 0 0 16px rgba(85, 255, 100, 0.1);
+    }
+
+    button:hover { background: rgba(25, 68, 34, 0.86); }
+    button:disabled { cursor: not-allowed; opacity: 0.5; }
+
+    .auth-window {
+      margin-top: 18px;
+      padding-top: 12px;
+      border-top: 1px solid var(--panel-border);
+    }
+
+    #countdown { color: var(--phosphor); font-weight: 800; }
+
+    .generic-state {
+      display: none;
+      padding: 28px 0 12px;
+    }
+
+    .generic-state h2 {
+      color: var(--heading);
+      font-size: clamp(1.25rem, 6vw, 1.8rem);
+      overflow-wrap: anywhere;
+    }
+
+    .generic-state p { line-height: 1.65; }
+
+    html:not([data-page-state="READY"]) #ready-state { display: none; }
+    html[data-page-state="SESSION INVALID"] #invalid-state,
+    html[data-page-state="TOO MANY ATTEMPTS"] #rate-limited-state,
+    html[data-page-state="SYSTEM ERROR"] #internal-error-state { display: block; }
+
+    .status-symbol { color: var(--warning); }
+    #internal-error-state .status-symbol { color: var(--error); }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @keyframes cursor-pulse {
+      0%, 42% { opacity: 1; }
+      43%, 100% { opacity: 0.28; }
+    }
+
+    @media (max-width: 360px) {
+      body { padding: 10px 7px; }
+      .crt { padding: 17px 13px; border-width: 3px; border-radius: 13px; }
+      .telemetry { gap: 6px; font-size: 0.63rem; }
+      .connection-data { grid-template-columns: 1fr; gap: 2px; }
+      .connection-data dd { margin-bottom: 7px; }
+    }
+
+    @media (min-width: 700px) {
+      body { padding: 42px 22px; }
+      .crt { padding: 36px 40px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+      }
+    }
   </style>
 </head>
 <body>
   <main id="pairing-shell"
+        class="crt"
         data-claim-path="{{FARPILOT_CLAIM_PATH_ATTR}}"
         data-expires-at-ms="{{FARPILOT_EXPIRES_ATTR}}">
-    <h1>{{FARPILOT_PAGE_STATE}}</h1>
-    <section id="connection-data">
-      <p id="host-value">{{FARPILOT_HOST_TEXT}}</p>
-      <p><span id="gateway-value">{{FARPILOT_GATEWAY_TEXT}}</span>:<span id="port-value">{{FARPILOT_PORT_TEXT}}</span></p>
-      <code id="fingerprint-value">{{FARPILOT_FINGERPRINT_TEXT}}</code>
-    </section>
+    <div class="scanlines" aria-hidden="true"></div>
+    <div class="crt-content">
+      <header class="telemetry">
+        <span>FARPILOT // SECURE RELAY</span>
+        <span class="online">● ONLINE</span>
+      </header>
+      <div class="rule" aria-hidden="true"></div>
+
+      <section id="ready-state">
+        <h1>授权远程终端<span class="cursor" aria-hidden="true">█</span></h1>
+        <p class="eyebrow">AUTHORIZE REMOTE TERMINAL</p>
+
+        <dl class="connection-data">
+          <dt>TARGET</dt>
+          <dd id="host-value">{{FARPILOT_HOST_TEXT}}</dd>
+          <dt>GATEWAY</dt>
+          <dd><span id="gateway-value">{{FARPILOT_GATEWAY_TEXT}}</span>:<span id="port-value">{{FARPILOT_PORT_TEXT}}</span></dd>
+          <dt>KEY</dt>
+          <dd id="fingerprint-value">{{FARPILOT_FINGERPRINT_TEXT}}</dd>
+        </dl>
+        <p class="security-note">请与管理员提供的 SSH 指纹逐字比对。</p>
+
+        <form id="pair-form" novalidate>
+          <label for="device-name">DEVICE_NAME</label>
+          <input id="device-name" name="device-name" maxlength="64" required autocomplete="off" aria-describedby="device-error">
+          <p id="device-error" class="field-error" hidden></p>
+
+          <label for="ssh-key">SSH_ED25519_PUBLIC_KEY</label>
+          <textarea id="ssh-key" name="ssh-key" required spellcheck="false" autocapitalize="off" autocomplete="off" aria-describedby="key-help key-error"></textarea>
+          <p id="key-help" class="field-help">仅粘贴公钥。私钥始终保留在你的设备上。</p>
+          <p id="key-error" class="field-error" hidden></p>
+
+          <button id="submit-button" type="submit">[ AUTHORIZE DEVICE ]</button>
+        </form>
+
+        <div class="auth-window">
+          <span>AUTH WINDOW</span>
+          <time id="countdown">--:--</time>
+        </div>
+      </section>
+
+      <section id="terminal-state" hidden></section>
+      <section id="invalid-state" class="generic-state">
+        <h2><span class="status-symbol">!</span> SESSION INVALID</h2>
+        <p>此配对会话不可用。请重新生成并扫描二维码。</p>
+      </section>
+      <section id="rate-limited-state" class="generic-state">
+        <h2><span class="status-symbol">!</span> TOO MANY ATTEMPTS</h2>
+        <p>请求过于频繁，请稍后重试。</p>
+      </section>
+      <section id="internal-error-state" class="generic-state">
+        <h2><span class="status-symbol">×</span> SYSTEM ERROR</h2>
+        <p>Gateway 暂时无法完成请求，请稍后重试。</p>
+      </section>
+
+      <p id="page-status" class="sr-only" aria-live="polite"></p>
+    </div>
   </main>
   <script nonce="{{FARPILOT_NONCE}}">'use strict';</script>
 </body>
