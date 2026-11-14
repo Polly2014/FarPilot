@@ -438,9 +438,16 @@ function Get-FarPilotStartupTaskState {
     if ($null -eq $task) {
         return [PSCustomObject]@{ Exists = $false; Running = $false; Definition = $null }
     }
+    $actions = @($task.Actions)
+    $executable = if ($actions.Count -eq 1) { [string]$actions[0].Execute } else { $null }
+    $arguments = if ($actions.Count -eq 1) { [string]$actions[0].Arguments } else { $null }
     return [PSCustomObject]@{
         Exists = $true
         Running = ($task.State -eq 'Running')
+        Executable = $executable
+        Arguments = $arguments
+        UserId = [string]$task.Principal.UserId
+        RunLevel = [string]$task.Principal.RunLevel
         Definition = $task
     }
 }
@@ -690,6 +697,21 @@ function Get-FarPilotInstallState {
     return [PSCustomObject]@{ Exists = $true; Raw = $raw; Bytes = [IO.File]::ReadAllBytes($Path); VisibleBin = $visibleBin }
 }
 
+function Resolve-FarPilotUninstallBinDir {
+    param([object]$InstallState, [object]$TaskState, [string]$DefaultBinDir, [string]$ReleasesDir)
+    if ($InstallState.Exists) { return [string]$InstallState.VisibleBin }
+    if (-not $TaskState.Exists) { return Get-CanonicalPath $DefaultBinDir }
+    $executable = [string]$TaskState.Executable
+    if ([string]::IsNullOrWhiteSpace($executable) -or (Split-Path -Leaf $executable) -ine 'farpilot.exe' -or
+        [string]$TaskState.Arguments -cne 'host start') {
+        throw 'Existing FarPilot task does not contain a valid managed executable path'
+    }
+    $candidate = Get-CanonicalPath (Split-Path -Parent $executable)
+    $state = Get-JunctionState -Path $candidate -ReleasesDir $ReleasesDir -AllowLegacyBinary $false
+    if ($state.Kind -ne 'Junction') { throw 'Existing FarPilot task executable is not under a managed visible-bin junction' }
+    return $candidate
+}
+
 function Write-FarPilotInstallState {
     param([string]$Path, [string]$VisibleBin)
     $parent = Split-Path -Parent $Path
@@ -769,6 +791,30 @@ function Assert-SafeUninstallDirectory {
     if (-not (Test-RegularDirectory $Path)) { throw "Refusing unsafe $Label path: $Path" }
 }
 
+function Assert-NoReparseTree {
+    param([string]$Path, [string]$Label)
+    if (-not (Test-RegularDirectory $Path)) { throw "Refusing unsafe $Label directory: $Path" }
+    foreach ($entry in @(Get-ChildItem -LiteralPath $Path -Force)) {
+        if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Refusing reparse point inside $Label: $($entry.FullName)"
+        }
+        if ($entry.PSIsContainer) {
+            Assert-NoReparseTree -Path $entry.FullName -Label $Label
+        } elseif (-not (Test-RegularFile $entry.FullName)) {
+            throw "Refusing nonregular file inside $Label: $($entry.FullName)"
+        }
+    }
+}
+
+function Assert-FarPilotReleaseDirectoryShape {
+    param([string]$Path, [string]$Kind)
+    Assert-NoReparseTree -Path $Path -Label $Kind
+    $entries = @(Get-ChildItem -LiteralPath $Path -Force)
+    if ($entries.Count -ne 1 -or $entries[0].Name -ine 'farpilot.exe' -or -not (Test-RegularFile $entries[0].FullName)) {
+        throw "Refusing unexpected contents in $Kind directory: $Path"
+    }
+}
+
 function Get-FarPilotUninstallDeletionPlan {
     param([string]$Root, [string]$ReleasesDir, [string]$CurrentDir, [string]$BinDir, [string]$LockPath, [string]$InstallStatePath)
     $aliases = @()
@@ -786,10 +832,14 @@ function Get-FarPilotUninstallDeletionPlan {
             if (-not $entry.PSIsContainer -or ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
                 throw "Refusing unsafe release entry during uninstall: $($entry.FullName)"
             }
-            if ($entry.Name -notmatch '^(?:[0-9]+\.[0-9]+\.[0-9]+-x86_64-pc-windows-msvc|\.staging\..+|\.backup\..+)$') {
+            Assert-SafeUninstallDirectory -Path $entry.FullName -Root $ReleasesDir -Label 'release entry'
+            if ($entry.Name -match '^[0-9]+\.[0-9]+\.[0-9]+-x86_64-pc-windows-msvc$') {
+                Assert-FarPilotReleaseDirectoryShape -Path $entry.FullName -Kind 'release'
+            } elseif ($entry.Name -match '^\.staging\.[0-9]+\.[0-9]+\.[0-9]+-x86_64-pc-windows-msvc\.[0-9]+$') {
+                Assert-FarPilotReleaseDirectoryShape -Path $entry.FullName -Kind 'staging'
+            } else {
                 throw "Refusing unmanaged release directory during uninstall: $($entry.FullName)"
             }
-            Assert-SafeUninstallDirectory -Path $entry.FullName -Root $ReleasesDir -Label 'release entry'
             $releaseEntries += [string]$entry.FullName
         }
     }
@@ -799,6 +849,7 @@ function Get-FarPilotUninstallDeletionPlan {
             throw "Refusing unmanaged legacy directory during uninstall: $($entry.FullName)"
         }
         Assert-SafeUninstallDirectory -Path $entry.FullName -Root $Root -Label 'legacy backup'
+        Assert-FarPilotReleaseDirectoryShape -Path $entry.FullName -Kind 'legacy backup'
         $legacyEntries += [string]$entry.FullName
     }
     if (Test-Path -LiteralPath $LockPath) {
@@ -887,6 +938,7 @@ function Invoke-FarPilotUninstallQuarantineCleanup {
             if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
                 Remove-Item -LiteralPath $entry.Quarantine -Force
             } elseif ($item.PSIsContainer) {
+                Assert-NoReparseTree -Path $entry.Quarantine -Label 'uninstall quarantine'
                 Remove-Item -LiteralPath $entry.Quarantine -Recurse -Force
             } elseif ($item.PSIsContainer -eq $false) {
                 Remove-Item -LiteralPath $entry.Quarantine -Force
@@ -1048,7 +1100,8 @@ if ($Uninstall) {
     $uninstallCurrent = Join-Path $uninstallRoot 'current'
     $uninstallStatePath = Join-Path $uninstallRoot 'install-state.json'
     $uninstallState = Get-FarPilotInstallState -Path $uninstallStatePath -DefaultBinDir (Join-Path $uninstallRoot 'bin')
-    $uninstallBin = $uninstallState.VisibleBin
+    $uninstallTaskEvidence = Get-FarPilotStartupTaskState
+    $uninstallBin = Resolve-FarPilotUninstallBinDir -InstallState $uninstallState -TaskState $uninstallTaskEvidence -DefaultBinDir (Join-Path $uninstallRoot 'bin') -ReleasesDir $uninstallReleases
     $uninstallLock = Join-Path $uninstallRoot 'install.lock'
     Invoke-FarPilotUninstall -Root $uninstallRoot -ReleasesDir $uninstallReleases -CurrentDir $uninstallCurrent -BinDir $uninstallBin -LockPath $uninstallLock -InstallStatePath $uninstallStatePath -Purge ([bool]$PurgeState) -Preview ([bool]$DryRun)
     return

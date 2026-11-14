@@ -604,6 +604,41 @@ try {
     Assert-Equal -Expected 'sibling-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $customSibling 'keep.txt') -Raw).Trim() -Message 'custom uninstall changed unrelated sibling'
     Assert-Equal -Expected 'default-bin-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $defaultBin 'keep.txt') -Raw).Trim() -Message 'custom uninstall removed unrelated default bin'
 
+    # Legacy custom installs without metadata discover their visible bin from the managed task.
+    $legacyCustom = Initialize-ScenarioRoot 'legacy-custom-install-dir'
+    $legacyCustomBin = Join-Path $legacyCustom 'legacy-visible-bin'
+    $legacyDefaultBin = Join-Path $legacyCustom 'FarPilot\bin'
+    Install-Fixture -Scenario $legacyCustom -Package $packages['0.2.0'] -Version '0.2.0' -InstallDir $legacyCustomBin -EnableStartupTask | Out-Null
+    Remove-Item -LiteralPath (Join-Path $legacyCustom 'FarPilot\install-state.json') -Force
+    New-Item -ItemType Directory -Path $legacyDefaultBin | Out-Null
+    'legacy-default-sentinel' | Set-Content -LiteralPath (Join-Path $legacyDefaultBin 'keep.txt')
+    $legacyCustomUninstall = Invoke-UninstallerProcess -LocalAppData $legacyCustom
+    Assert-Equal -Expected 0 -Actual $legacyCustomUninstall.ExitCode -Message "legacy custom uninstall failed: $($legacyCustomUninstall.Output)"
+    Assert-True (-not (Test-Path -LiteralPath $legacyCustomBin)) 'legacy custom visible bin remained after uninstall'
+    Assert-Equal -Expected 'legacy-default-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $legacyDefaultBin 'keep.txt') -Raw).Trim() -Message 'legacy custom uninstall removed unrelated default bin'
+
+    # A legacy task that points outside a managed junction is rejected before mutation.
+    $maliciousTask = Initialize-ScenarioRoot 'legacy-external-task'
+    Install-Fixture -Scenario $maliciousTask -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
+    $maliciousRoot = Join-Path $maliciousTask 'FarPilot'
+    Remove-Item -LiteralPath (Join-Path $maliciousRoot 'install-state.json') -Force
+    $externalTaskDir = Join-Path $maliciousTask 'external-task-bin'
+    New-Item -ItemType Directory -Path $externalTaskDir | Out-Null
+    'external-task-sentinel' | Set-Content -LiteralPath (Join-Path $externalTaskDir 'farpilot.exe')
+    $maliciousTaskState = Get-TestState -LocalAppData $maliciousTask -Name 'task'
+    $maliciousTaskState.Executable = Join-Path $externalTaskDir 'farpilot.exe'
+    $maliciousTaskState.Running = $true
+    Write-TestStateFile -LocalAppData $maliciousTask -Name 'task' -Value $maliciousTaskState
+    $maliciousTaskJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $maliciousTask) 'task.json') -Raw
+    $maliciousPathJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $maliciousTask) 'path.json') -Raw
+    $maliciousCurrent = Get-JunctionTarget (Join-Path $maliciousRoot 'current')
+    $maliciousResult = Invoke-UninstallerProcess -LocalAppData $maliciousTask
+    Assert-True ($maliciousResult.ExitCode -ne 0) 'external legacy task path unexpectedly uninstalled'
+    Assert-Equal -Expected $maliciousCurrent -Actual (Get-JunctionTarget (Join-Path $maliciousRoot 'current')) -Message 'external legacy task changed current'
+    Assert-Equal -Expected $maliciousTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $maliciousTask) 'task.json') -Raw) -Message 'external legacy task changed task'
+    Assert-Equal -Expected $maliciousPathJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $maliciousTask) 'path.json') -Raw) -Message 'external legacy task changed PATH'
+    Assert-Equal -Expected 'external-task-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $externalTaskDir 'farpilot.exe') -Raw).Trim() -Message 'external legacy task target changed'
+
     # Corrupt/external install metadata fails before task, PATH, alias, or release mutation.
     $corruptState = Initialize-ScenarioRoot 'corrupt-install-state'
     $corruptBin = Join-Path $corruptState 'managed-custom-bin'
@@ -736,7 +771,7 @@ try {
     Assert-Equal -Expected 'external-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $uninstallExternal 'keep.txt') -Raw).Trim() -Message 'uninstall deleted external target'
 
     # The complete release deletion tree is preflighted before task/process/PATH mutation.
-    $preflightCases = @('unmanaged-directory', 'reparse-entry')
+    $preflightCases = @('unmanaged-directory', 'reparse-entry', 'unknown-nested-file', 'nested-release-junction')
     foreach ($preflightCase in $preflightCases) {
         $preflight = Initialize-ScenarioRoot ("uninstall-preflight-" + $preflightCase)
         Install-Fixture -Scenario $preflight -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
@@ -749,15 +784,27 @@ try {
         $preflightPathJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $preflight) 'path.json') -Raw
         $preflightCurrent = Get-JunctionTarget (Join-Path $preflightRoot 'current')
         $preflightBin = Get-JunctionTarget (Join-Path $preflightRoot 'bin')
-        if ($preflightCase -eq 'unmanaged-directory') {
-            $unmanagedRelease = Join-Path $preflightReleases 'operator-data'
-            New-Item -ItemType Directory -Path $unmanagedRelease | Out-Null
-            'release-sentinel' | Set-Content -LiteralPath (Join-Path $unmanagedRelease 'keep.txt')
-        } else {
-            $externalRelease = Join-Path $preflight 'external-release-entry'
-            New-Item -ItemType Directory -Path $externalRelease | Out-Null
-            'reparse-sentinel' | Set-Content -LiteralPath (Join-Path $externalRelease 'keep.txt')
-            New-Item -ItemType Junction -Path (Join-Path $preflightReleases '.staging.external') -Target $externalRelease | Out-Null
+        switch ($preflightCase) {
+            'unmanaged-directory' {
+                $unmanagedRelease = Join-Path $preflightReleases 'operator-data'
+                New-Item -ItemType Directory -Path $unmanagedRelease | Out-Null
+                'release-sentinel' | Set-Content -LiteralPath (Join-Path $unmanagedRelease 'keep.txt')
+            }
+            'reparse-entry' {
+                $externalRelease = Join-Path $preflight 'external-release-entry'
+                New-Item -ItemType Directory -Path $externalRelease | Out-Null
+                'reparse-sentinel' | Set-Content -LiteralPath (Join-Path $externalRelease 'keep.txt')
+                New-Item -ItemType Junction -Path (Join-Path $preflightReleases '.staging.external') -Target $externalRelease | Out-Null
+            }
+            'unknown-nested-file' {
+                'nested-note-sentinel' | Set-Content -LiteralPath (Join-Path $preflightCurrent 'notes.txt')
+            }
+            'nested-release-junction' {
+                $externalRelease = Join-Path $preflight 'external-nested-release-entry'
+                New-Item -ItemType Directory -Path $externalRelease | Out-Null
+                'nested-reparse-sentinel' | Set-Content -LiteralPath (Join-Path $externalRelease 'keep.txt')
+                New-Item -ItemType Junction -Path (Join-Path $preflightCurrent 'nested-link') -Target $externalRelease | Out-Null
+            }
         }
         $preflightResult = Invoke-UninstallerProcess -LocalAppData $preflight
         Assert-True ($preflightResult.ExitCode -ne 0) "$preflightCase preflight unexpectedly succeeded"
@@ -766,10 +813,19 @@ try {
         Assert-Equal -Expected $preflightTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $preflight) 'task.json') -Raw) -Message "$preflightCase changed task before preflight completed"
         Assert-Equal -Expected $preflightPathJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $preflight) 'path.json') -Raw) -Message "$preflightCase changed PATH before preflight completed"
         Assert-True (Test-Path -LiteralPath (Join-Path $preflightCurrent 'farpilot.exe')) "$preflightCase removed active release"
-        if ($preflightCase -eq 'unmanaged-directory') {
-            Assert-Equal -Expected 'release-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $preflightReleases 'operator-data\keep.txt') -Raw).Trim() -Message 'unmanaged release data changed'
-        } else {
-            Assert-Equal -Expected 'reparse-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $preflight 'external-release-entry\keep.txt') -Raw).Trim() -Message 'release reparse target changed'
+        switch ($preflightCase) {
+            'unmanaged-directory' {
+                Assert-Equal -Expected 'release-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $preflightReleases 'operator-data\keep.txt') -Raw).Trim() -Message 'unmanaged release data changed'
+            }
+            'reparse-entry' {
+                Assert-Equal -Expected 'reparse-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $preflight 'external-release-entry\keep.txt') -Raw).Trim() -Message 'release reparse target changed'
+            }
+            'unknown-nested-file' {
+                Assert-Equal -Expected 'nested-note-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $preflightCurrent 'notes.txt') -Raw).Trim() -Message 'unknown nested release file changed'
+            }
+            'nested-release-junction' {
+                Assert-Equal -Expected 'nested-reparse-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $preflight 'external-nested-release-entry\keep.txt') -Raw).Trim() -Message 'nested release junction target changed'
+            }
         }
     }
 
