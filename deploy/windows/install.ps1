@@ -796,12 +796,12 @@ function Assert-NoReparseTree {
     if (-not (Test-RegularDirectory $Path)) { throw "Refusing unsafe $Label directory: $Path" }
     foreach ($entry in @(Get-ChildItem -LiteralPath $Path -Force)) {
         if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-            throw "Refusing reparse point inside $Label: $($entry.FullName)"
+            throw "Refusing reparse point inside ${Label}: $($entry.FullName)"
         }
         if ($entry.PSIsContainer) {
             Assert-NoReparseTree -Path $entry.FullName -Label $Label
         } elseif (-not (Test-RegularFile $entry.FullName)) {
-            throw "Refusing nonregular file inside $Label: $($entry.FullName)"
+            throw "Refusing nonregular file inside ${Label}: $($entry.FullName)"
         }
     }
 }
