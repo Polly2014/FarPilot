@@ -69,7 +69,10 @@ PY
 
 grep -Eq '^multiple-versions = "warn"$' deny.toml
 grep -Eq '^wildcards = "deny"$' deny.toml
-! grep -Fq 'CDLA-Permissive-2.0' deny.toml
+if grep -Fq 'CDLA-Permissive-2.0' deny.toml; then
+  printf '%s\n' "CDLA-Permissive-2.0 must not be allowlisted" >&2
+  exit 1
+fi
 grep -Fq 'https://github.com/transact-rs/sqlx' deny.toml
 
 printf '%s\n' "dependency policy verified"
