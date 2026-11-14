@@ -58,9 +58,9 @@ The following SignPath Foundation conditions are not assumed from the Apache-2.0
 
 | SignPath OSS eligibility requirement | Current status | Evidence or remaining work |
 |---|---|---|
-| No malware or potentially unwanted applications | **PENDING** | The built-in private scan and automated security suites completed, but Gitleaks and the SignPath-specific manual behavior/PUA review remain incomplete. |
+| No malware or potentially unwanted applications | **PENDING** | Gitleaks 8.30.1 reported only one reviewed synthetic plan marker and no other finding; the built-in review categories and SignPath-specific manual behavior/PUA review remain incomplete. |
 | OSI-approved project license | **IMPLEMENTED BUT NOT PUBLIC** | Apache-2.0 is present in the private repository; anonymous verification is not yet possible. |
-| Dependency/license audit and no proprietary bundled components | **PENDING** | Preliminary Cargo metadata found 305 packages and no missing license expressions; cargo-deny policy/advisory/source checks and release-content review remain incomplete. |
+| Dependency/license audit and no proprietary bundled components | **BLOCKED** | cargo-deny 0.20.2 reported 21 errors: duplicate/wildcard policy diagnostics, two `CDLA-Permissive-2.0` rejections for `webpki-roots` dependency versions, and `RUSTSEC-2026-0459` / `CVE-2026-119375` in `libsqlite3-sys`; remediation and clean rerun are required. |
 | Active maintenance evidence | **IMPLEMENTED BUT NOT PUBLIC** | Current private evidence includes commit history, passing CI, current documentation, and recent release-readiness work; it is not anonymously accessible while the repository is Private. |
 | Already released in signable form | **NOT SATISFIED** | The fixed unsigned application prerelease `v0.1.0-unsigned.1` is not published. |
 | Documented functionality and download information | **IMPLEMENTED BUT NOT PUBLIC** | README, runbook, installer, security, and uninstall documentation exist on the readiness branch but are not yet public/merged. |
@@ -166,9 +166,9 @@ SignPath has not approved FarPilot, the `release-signing` Environment is not con
 | Privacy policy prepared | **YES on readiness branch; not yet public/merged** |
 | Security reporting policy prepared | **YES on readiness branch; not yet public/merged** |
 | Uninstall implementation and guide prepared | **YES on readiness branch; not yet public/merged** |
-| Public-readiness tree/history audit | **BLOCKED — built-in scan completed; private dispositions, Gitleaks, and dependency policy checks remain** |
-| Complementary Gitleaks audit | **PENDING — tool unavailable in the audit environment** |
-| Dependency/license policy audit | **PENDING — preliminary Cargo metadata complete; cargo-deny unavailable** |
+| Public-readiness tree/history audit | **BLOCKED — built-in scan completed; remaining FarPilot-specific review categories need private disposition** |
+| Complementary Gitleaks audit | **COMPLETED — one synthetic plan marker reviewed as a false positive; no other finding** |
+| Dependency/license policy audit | **BLOCKED — cargo-deny found 21 policy/advisory errors, including RUSTSEC-2026-0459 / CVE-2026-119375** |
 | GitHub MFA enabled | **USER CONFIRMATION REQUIRED** |
 | SignPath MFA enabled | **NOT APPLICABLE UNTIL ACCOUNT/INVITATION EXISTS** |
 | Unsigned prerelease `v0.1.0-unsigned.1` | **NOT PUBLISHED** |

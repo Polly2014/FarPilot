@@ -95,9 +95,9 @@ This section is separate from Stage 0 product acceptance. It records only saniti
 
 | Check | Result | Sanitized evidence |
 |---|---|---|
-| Built-in tracked-tree/history audit | Blocked | Scanner completed against the private readiness branch and all reachable refs; 6 high-severity and 26 review findings require complementary private disposition. Raw matches and paths are not committed |
-| Complementary Gitleaks audit | Pending | `gitleaks` was unavailable and was not downloaded automatically |
-| Dependency/license audit | Pending | Cargo metadata found 305 packages and zero missing license expressions, but `cargo-deny` was unavailable, so advisory/license/ban/source policy is incomplete |
+| Built-in tracked-tree/history audit | Blocked | Scanner completed against the private readiness branch and all reachable refs; obvious synthetic high-severity examples were privately reviewed, while 26 FarPilot-specific review findings still require private disposition. Raw matches and paths are not committed |
+| Complementary Gitleaks audit | Pass with reviewed false positive | Gitleaks 8.30.1 scanned all history with redaction and reported one synthetic private-key marker in the public SignPath implementation-plan prose; no key material or other finding was reported |
+| Dependency/license audit | Blocked | cargo-deny 0.20.2 reported 21 errors: duplicate/wildcard policy diagnostics, two rejected `CDLA-Permissive-2.0` diagnostics for `webpki-roots` dependency versions, and `RUSTSEC-2026-0459` / `CVE-2026-119375` in `libsqlite3-sys` bundled SQLite before 3.54.0 |
 | Tracked-file review | Pass | 105 tracked entries, no regular file over 1 MiB, no submodule, and no Git LFS pointer candidate |
 | Author identity review | Pending | One historical email domain is present across 94 commits; Polly must confirm that its public disclosure is acceptable |
 | SignPath malware/PUA and proprietary-component review | Pending | Existing automated security tests pass, but the SignPath-specific eligibility disposition is incomplete |
