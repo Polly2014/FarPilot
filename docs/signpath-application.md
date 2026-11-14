@@ -36,7 +36,9 @@ SignPath account or tenant details: [ENTER DIRECTLY IN SIGNPATH FORM — DO NOT 
 
 FarPilot is an authorized self-hosted SSH terminal relay for reaching persistent Herdr coding-agent sessions on Windows Hosts that can make outbound connections but cannot accept inbound traffic.
 
-FarPilot is not an offensive security tool. It does not provide arbitrary remote command execution, a general Gateway shell, SSH forwarding, credential testing, exploitation, persistence, evasion, scanning, or access to systems that the operator does not own or administer. The Windows Host launches only the configured Herdr executable, and the Gateway SSH account is restricted to an explicitly authorized Host attachment.
+FarPilot is not an offensive security tool. It does not provide arbitrary remote command execution, a general Gateway shell, SSH forwarding, credential testing, exploitation, evasion, scanning, or stealth, unauthorized, or offensive persistence. The Windows Host launches only the configured Herdr executable, and the Gateway SSH account is restricted to an explicitly authorized Host attachment.
+
+FarPilot can optionally create a documented current-user logon Scheduled Task for Host startup. This startup mechanism is user-visible, runs without elevation, and is removable with `-Uninstall`; it is not a hidden persistence mechanism.
 
 ## Signing roles
 
@@ -49,6 +51,24 @@ Approver: Polly / Polly2014
 ```
 
 The single-maintainer limitation and compensating controls are documented in the [Code signing policy](code-signing-policy.md). If SignPath Foundation requires a separate reviewer or approver, production signing remains blocked until a trusted person is added.
+
+## OSS eligibility review
+
+The following SignPath Foundation conditions are not assumed from the Apache-2.0 project license alone. Each row remains a submission blocker until supported by public, reviewable evidence.
+
+| SignPath OSS eligibility requirement | Current status | Evidence or remaining work |
+|---|---|---|
+| No malware or potentially unwanted applications | **PENDING** | Task 7 must complete the private tree/history scans and a manual behavior review before repository publication. |
+| OSI-approved project license | **IMPLEMENTED BUT NOT PUBLIC** | Apache-2.0 is present in the private repository; anonymous verification is not yet possible. |
+| Dependency/license audit and no proprietary bundled components | **PENDING** | Task 7 must inspect Rust dependencies, Windows release contents, notices, and bundled components; the project license alone is insufficient evidence. |
+| Active maintenance evidence | **IMPLEMENTED BUT NOT PUBLIC** | Current private evidence includes commit history, passing CI, current documentation, and recent release-readiness work; it is not anonymously accessible while the repository is Private. |
+| Already released in signable form | **NOT SATISFIED** | The fixed unsigned application prerelease `v0.1.0-unsigned.1` is not published. |
+| Documented functionality and download information | **IMPLEMENTED BUT NOT PUBLIC** | README, runbook, installer, security, and uninstall documentation exist on the readiness branch but are not yet public/merged. |
+| Uninstall instructions or automation | **IMPLEMENTED BUT NOT PUBLIC** | Transactional Windows uninstall and conservative cross-platform guidance exist on the readiness branch. |
+| No hacking tools | **EXTERNAL REVIEW REQUIRED** | FarPilot is designed as an authorized self-hosted terminal relay with strict command, shell, forwarding, and Host authorization boundaries; final classification remains SignPath Foundation's decision. |
+| MFA and signing-role process | **USER CONFIRMATION REQUIRED** | GitHub MFA must be confirmed before submission; SignPath MFA becomes applicable only after account or invitation setup. |
+
+Application readiness: **BLOCKED** while any eligibility row is `PENDING`, `NOT SATISFIED`, or `EXTERNAL REVIEW REQUIRED`.
 
 ## Code-signing scope
 

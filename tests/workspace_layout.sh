@@ -127,9 +127,21 @@ for required in \
   '[Uninstall guide](uninstall.md)' \
   '[Security policy](../SECURITY.md)' \
   '[Unsigned application workflow](../.github/workflows/signpath-application.yml)' \
-  '[ENTER DIRECTLY IN SIGNPATH FORM — DO NOT COMMIT]'; do
+  '[ENTER DIRECTLY IN SIGNPATH FORM — DO NOT COMMIT]' \
+  'documented current-user logon Scheduled Task' \
+  'removable with `-Uninstall`' \
+  'No malware or potentially unwanted applications | **PENDING**' \
+  'Dependency/license audit and no proprietary bundled components | **PENDING**' \
+  'Active maintenance evidence | **IMPLEMENTED BUT NOT PUBLIC**' \
+  'Already released in signable form | **NOT SATISFIED**' \
+  'No hacking tools | **EXTERNAL REVIEW REQUIRED**' \
+  'Application readiness: **BLOCKED** while any eligibility row is `PENDING`, `NOT SATISFIED`, or `EXTERNAL REVIEW REQUIRED`'; do
   grep -Fq "$required" "$signpath_application"
 done
+if grep -Fq 'credential testing, exploitation, persistence' "$signpath_application"; then
+  echo 'SignPath application packet makes an absolute no-persistence claim' >&2
+  exit 1
+fi
 if grep -Eqi 'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16}|(api[_-]?token|client[_-]?secret)[[:space:]]*[:=][[:space:]]*[^[][^[:space:]]+' "$signpath_application"; then
   echo 'SignPath application packet contains a token-like committed value' >&2
   exit 1
