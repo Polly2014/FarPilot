@@ -4,7 +4,7 @@
 
 **Repository visibility:** Private
 
-**Final private review date/revision:** 2026-11-15 at `9528c38acd78`
+**Final private review date/revision:** 2026-11-15 at `4b3defda9236`
 
 This committed file records only sanitized counts and dispositions. Raw scanner output, matching values, private paths, identity documents, and credentials remain outside the repository in mode-0600 private job storage.
 
@@ -17,12 +17,12 @@ This committed file records only sanitized counts and dispositions. Raw scanner 
 | Gitleaks 8.30.1 | Pass after reviewed false positive | Redacted full-history scan returned one `private-key` rule finding. It is the intentionally synthetic marker in `docs/plans/2026-11-14-farpilot-signpath-readiness-implementation.md`, not key material. No other Gitleaks finding was reported |
 | FarPilot-specific prohibited-data review | Pass after private disposition | All 11 FarPilot identifiers are synthetic test values; all 3 internal-hostname findings are scanner test fixtures; all 13 private-address findings are prefix-only numeric false positives with zero valid RFC1918 address found |
 | Tracked large/generated-file review | Pass | 106 tracked entries; zero regular files over 1 MiB; largest tracked regular file was 73,923 bytes; no Git LFS pointer or submodule entry detected |
-| Commit author/email review | Accepted for publication | 100 commits use one email domain (`qq.com`); Polly explicitly accepted public disclosure of that historical domain on 2026-11-15 |
+| Commit author/email review | Accepted for publication | 103 reachable commits use one email domain (`qq.com`); Polly explicitly accepted public disclosure of that historical domain on 2026-11-15 |
 | Dependency/license and advisory review | Pass | cargo-deny 0.20.2 advisories, licenses, sources, and bans pass under the reviewed duplicate-warning policy; patched SQLite is used and no package lacks a license expression |
 | Proprietary-component review | Pass for current graph/artifact set | Cargo source/license policy passes, non-OSI root-data packages were removed, and the exact release assembly contains no third-party executable artifact |
 | Malware/PUA behavior review | Pass for internal readiness; external classification pending | Source and behavior review found an authorized self-hosted terminal relay with explicit device grants, a fixed Herdr launcher, restricted Gateway account, no arbitrary shell/forwarding/scanning/exploitation/evasion, documented user-visible startup task/uninstall, and no project telemetry. Final no-hacking-tools classification remains SignPath Foundation's decision |
 | Public documentation and workflow review | Prepared, not public | Signing, privacy, security, uninstall, prerelease, and application documents exist on the readiness branch; anonymous access is unavailable while the repository remains Private |
-| Full regression evidence | Pass on final candidate | At `9528c38acd78`, Rust formatting/Clippy/workspace/doc tests, audit 17/17, release 20/20, Windows/POSIX/Gateway installers, deployment, SSH restriction, E2E, stable and SignPath workflow mutation, dependency-policy, and shell syntax gates all passed |
+| Full regression evidence | Pass on final candidate | At `4b3defda9236`, Rust formatting/Clippy/workspace/doc tests, audit 17/17, release 20/20, Windows/POSIX/Gateway installers, deployment, SSH restriction, E2E, stable and SignPath workflow mutation, dependency-policy, and shell syntax gates all passed locally; private CI run `43644790464` passed Windows, macOS, Ubuntu, OpenSSH security, formatting, and lint jobs |
 
 ## Sanitized built-in scanner disposition
 
@@ -51,7 +51,7 @@ Tags observed: 0
 Submodule entries: 0
 Git LFS pointer candidates: 0
 Workflow secret references: 0
-Commit email domains: qq.com only (100 commits)
+Commit email domains: qq.com only (103 reachable commits)
 ```
 
 Polly explicitly accepted publication of the historical `qq.com` author-email domain on 2026-11-15. This acceptance covers only existing Git author metadata and does not itself authorize a repository visibility change.
@@ -121,7 +121,7 @@ Do not commit either raw report. Update this document with category counts and d
 
 ## Remaining visibility-gate actions
 
-1. Review the sanitized final diff and commit list for candidate `9528c38acd78`.
+1. Review the sanitized final diff and commit list for candidate `4b3defda9236`.
 2. Obtain Polly's explicit External Gate A authorization before changing visibility.
 3. After Public conversion, verify anonymous access and security settings before considering the unsigned prerelease gate.
 
