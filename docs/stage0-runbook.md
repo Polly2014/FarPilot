@@ -197,8 +197,10 @@ The 2026-11-14 Chromium/Playwright acceptance observed:
     Invalid, RateLimited, and InternalError states rendered coherently
 [x] Synthetic 201 rendered only allowlisted details and hid device_id/host_id
 [x] prefers-reduced-motion disabled the default animation
-[x] Browser request capture contained no external or subresource requests
-[x] Browser console collection contained no errors for observed states
+[x] Request observers covered Ready, long-value 320 px, desktop, field error,
+    pending Submitting, Success, Network Error, Expired, Invalid, RateLimited,
+    InternalError, and reduced-motion; no external/subresource requests occurred
+[x] Console observers covered that same complete state set with zero errors
 [x] Ready, long-value, Success, and Expired screenshots passed manual CRT review
 [ ] Natural five-minute countdown reached 00:00 and locked the live form
 [ ] Keyboard tab order and semantic labels were manually traversed

@@ -80,8 +80,8 @@ The approved preview fixture is `Example DevBox`, `gateway.example.com:22`, a sy
 | Interactive states | Pass | Ready, synthetic pending `AUTHORIZING...`, field error, visible Network error, intercepted synthetic Success, Expired, Invalid, RateLimited, and InternalError headings rendered coherently |
 | Success data minimization | Pass | Synthetic `201` displayed `PAIRING COMPLETE`, `SESSION SEALED`, and allowlisted connection details; `device_id` and `host_id` were not shown |
 | Reduced motion | Pass | Reduced-motion context disabled the default animation duration and constrained iteration to one |
-| Browser network log | Pass | Request capture contained only the preview document and the synthetic Claim request after submission; no external or subresource requests occurred |
-| Browser console | Pass | No console errors were collected for the observed states |
+| Browser network log | Pass | Request observers covered Ready, long-value 320 px, desktop, field error, pending Submitting, Success, Network Error, Expired, Invalid, RateLimited, InternalError, and reduced-motion states; no external or subresource requests occurred, and only the synthetic same-origin Claim request appeared during Success submission |
+| Browser console | Pass | Console observers covered Ready, long-value 320 px, desktop, field error, pending Submitting, Success, Network Error, Expired, Invalid, RateLimited, InternalError, and reduced-motion states; every observed state produced zero console errors |
 | CRT readability and layout | Pass | Ready, long-value, Success, and Expired screenshots were manually inspected and accepted for CRT style, readability, and layout |
 | Keyboard tab order and semantic labels | Pending | Automated DOM contracts pass, but this was not manually traversed in the browser acceptance run |
 | iPhone Safari software keyboard | Pending | Chromium viewport testing does not prove that the iPhone Safari software keyboard leaves the submit control reachable |
