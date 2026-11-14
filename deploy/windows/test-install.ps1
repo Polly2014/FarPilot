@@ -541,7 +541,10 @@ try {
     Assert-True ($defaultUninstall.Output -match '(?i)revoke') 'default uninstall omitted Gateway revocation warning'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $uninstallRoot 'current'))) 'default uninstall left current junction'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $uninstallRoot 'bin'))) 'default uninstall left bin junction'
-    $remainingReleases = if (Test-Path -LiteralPath (Join-Path $uninstallRoot 'releases')) { @(Get-ChildItem -LiteralPath (Join-Path $uninstallRoot 'releases') -Force) } else { @() }
+    $remainingReleases = @()
+    if (Test-Path -LiteralPath (Join-Path $uninstallRoot 'releases')) {
+        $remainingReleases = @(Get-ChildItem -LiteralPath (Join-Path $uninstallRoot 'releases') -Force)
+    }
     Assert-Equal -Expected 0 -Actual $remainingReleases.Count -Message 'default uninstall left release files'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $uninstallRoot 'install.lock'))) 'default uninstall left install lock'
     Assert-Equal -Expected 'identity-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $uninstallRoot 'host-identity.json') -Raw).Trim() -Message 'default uninstall removed identity'
