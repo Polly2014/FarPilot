@@ -24,10 +24,14 @@ SignPath account or tenant details: [ENTER DIRECTLY IN SIGNPATH FORM — DO NOT 
 
 ## Project
 
-**Project name:** FarPilot  
-**Repository:** `https://github.com/Polly2014/FarPilot`  
-**Current visibility:** Private; publication is blocked on the reviewed public-readiness gate  
-**License:** [Apache License 2.0](../LICENSE)  
+**Project name:** FarPilot
+
+**Repository:** `https://github.com/Polly2014/FarPilot`
+
+**Current visibility:** Private; publication is blocked on the reviewed public-readiness gate
+
+**License:** [Apache License 2.0](../LICENSE)
+
 **Maintainer:** Polly (`Polly2014`)
 
 FarPilot is an authorized self-hosted SSH terminal relay for reaching persistent Herdr coding-agent sessions on Windows Hosts that can make outbound connections but cannot accept inbound traffic.
