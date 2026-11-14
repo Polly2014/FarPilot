@@ -188,18 +188,48 @@ jobs:
           if actual != expected:
               raise SystemExit(f"unexpected application release set: {sorted(actual)}")
           PY
-      - name: Refuse existing tag or release
+      - name: Fail closed if tag or release lookup is not absent
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/$APPLICATION_TAG" >/dev/null 2>&1; then
-            echo "tag already exists: $APPLICATION_TAG" >&2
-            exit 1
-          fi
-          if gh release view "$APPLICATION_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "release already exists: $APPLICATION_TAG" >&2
-            exit 1
-          fi
+          set +e
+          git ls-remote --exit-code --tags origin "refs/tags/$APPLICATION_TAG" >/dev/null 2>&1
+          tag_status=$?
+          set -e
+          case "$tag_status" in
+            0)
+              echo "tag already exists: $APPLICATION_TAG" >&2
+              exit 1
+              ;;
+            2)
+              ;;
+            *)
+              echo "unexpected git ls-remote status: $tag_status" >&2
+              exit 1
+              ;;
+          esac
+
+          assert_release_absent() {
+            set +e
+            release_response=$(gh api --include "/repos/$GITHUB_REPOSITORY/releases/tags/$APPLICATION_TAG" 2>/dev/null)
+            release_api_status=$?
+            set -e
+            release_http_status=$(printf '%s\n' "$release_response" | awk 'toupper($1) ~ /^HTTP/ { status=$2 } END { print status }')
+            case "$release_http_status" in
+              200)
+                echo "release already exists: $APPLICATION_TAG" >&2
+                exit 1
+                ;;
+              404)
+                return 0
+                ;;
+              *)
+                echo "unexpected GitHub release lookup status: ${release_http_status:-none} (gh rc $release_api_status)" >&2
+                exit 1
+                ;;
+            esac
+          }
+          assert_release_absent
       - name: Write unsigned prerelease warning
         run: |
           cat > application-release-notes.md <<'NOTES'
@@ -209,16 +239,53 @@ jobs:
 
           This prerelease contains an unsigned Windows executable submitted only to demonstrate FarPilot's verifiable build form during the SignPath Foundation application process. It is not selected by the stable installer or latest release channel.
           NOTES
-      - name: Publish unsigned application prerelease
+      - name: Atomically reserve tag and publish unsigned prerelease
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$APPLICATION_TAG" \
+          assert_release_absent() {
+            set +e
+            release_response=$(gh api --include "/repos/$GITHUB_REPOSITORY/releases/tags/$APPLICATION_TAG" 2>/dev/null)
+            release_api_status=$?
+            set -e
+            release_http_status=$(printf '%s\n' "$release_response" | awk 'toupper($1) ~ /^HTTP/ { status=$2 } END { print status }')
+            case "$release_http_status" in
+              200)
+                echo "release already exists: $APPLICATION_TAG" >&2
+                exit 1
+                ;;
+              404)
+                return 0
+                ;;
+              *)
+                echo "unexpected GitHub release lookup status: ${release_http_status:-none} (gh rc $release_api_status)" >&2
+                exit 1
+                ;;
+            esac
+          }
+          assert_release_absent
+
+          if ! gh api --method POST "/repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$APPLICATION_TAG" \
+            -f sha="$GITHUB_SHA" >/dev/null; then
+            echo "failed to create immutable application tag: $APPLICATION_TAG" >&2
+            exit 1
+          fi
+          remote_tag_sha=$(gh api "/repos/$GITHUB_REPOSITORY/git/ref/tags/$APPLICATION_TAG" --jq '.object.sha')
+          if [ "$remote_tag_sha" != "$GITHUB_SHA" ]; then
+            echo "created tag does not match dispatched commit" >&2
+            exit 1
+          fi
+
+          if ! gh release create "$APPLICATION_TAG" \
             application/farpilot-windows-x86_64-unsigned.exe \
             application/SHA256SUMS \
             application/build-metadata.json \
             --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
             --prerelease \
-            --target "$GITHUB_SHA" \
             --title "FarPilot $APPLICATION_TAG" \
-            --notes-file application-release-notes.md
+            --notes-file application-release-notes.md; then
+            echo "release creation failed; tag $APPLICATION_TAG remains bound to $GITHUB_SHA for reviewed recovery" >&2
+            exit 1
+          fi

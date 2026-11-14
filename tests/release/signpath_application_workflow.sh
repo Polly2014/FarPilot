@@ -92,8 +92,20 @@ def validate_application(document)
 
   publish_text = steps_text(publish)
   [
-    "gh release view",
+    "git ls-remote --exit-code --tags",
+    'tag_status=$?',
+    "unexpected git ls-remote status",
+    "assert_release_absent",
+    "unexpected GitHub release lookup status",
+    "/git/refs",
+    "refs/tags/",
+    "ref=",
+    "sha=",
+    "GITHUB_SHA",
+    "/git/ref/tags/",
+    "object.sha",
     "gh release create",
+    "--verify-tag",
     "--prerelease",
     "farpilot-windows-x86_64-unsigned.exe",
     "SHA256SUMS",
@@ -104,7 +116,10 @@ def validate_application(document)
     "signpath-application",
     "unsigned",
   ].each { |needle| assert(publish_text.include?(needle), "publish job missing #{needle}") }
-  assert(publish_text.include?("--target") && publish_text.include?("GITHUB_SHA"), "publish must target the dispatched main commit")
+  assert(publish_text.scan("assert_release_absent").length >= 3, "release absence must be checked before and immediately before tag creation")
+  assert(!publish_text.include?("--target"), "release creation must not override the atomically created tag")
+  assert(!publish_text.include?("gh release view"), "generic release-view checks are fail-open")
+  assert(!publish_text.include?("if git ls-remote"), "tag preflight must distinguish every exit status")
   assert(!publish_text.include?("manifest.json"), "application prerelease must not publish stable manifest")
   assert(!publish_text.include?("install.sh"), "application prerelease must not publish installers")
   assert(!publish_text.include?("--latest"), "application prerelease must not become latest")
@@ -134,6 +149,11 @@ mutations = {
   "missing warning" => ->(doc) { doc["jobs"]["publish"]["steps"].each { |step| step["run"]&.gsub!("Do not install on production systems.", "") } },
   "extra installer" => ->(doc) { doc["jobs"]["publish"]["steps"] << {"run" => "cp install.sh release/install.sh"} },
   "missing quality" => ->(doc) { doc["jobs"]["windows"]["needs"] = nil },
+  "missing verify tag" => ->(doc) { doc["jobs"]["publish"]["steps"].each { |step| step["run"]&.gsub!("--verify-tag", "") } },
+  "target override" => ->(doc) { doc["jobs"]["publish"]["steps"].each { |step| step["run"]&.gsub!("--prerelease", "--prerelease --target $GITHUB_SHA") } },
+  "missing ref creation" => ->(doc) { doc["jobs"]["publish"]["steps"].reject! { |step| step.to_s.include?("/git/refs") } },
+  "generic release lookup" => ->(doc) { doc["jobs"]["publish"]["steps"].each { |step| step["run"]&.gsub!("assert_release_absent", "gh release view") } },
+  "fail-open tag check" => ->(doc) { doc["jobs"]["publish"]["steps"].each { |step| step["run"]&.gsub!("unexpected git ls-remote status", "ignored git ls-remote status") } },
 }
 mutations.each do |name, mutation|
   copy = Marshal.load(Marshal.dump(application))
