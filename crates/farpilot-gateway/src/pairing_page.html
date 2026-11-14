@@ -523,7 +523,7 @@
       }
 
       function mapApiError(code) {
-        const errors = {
+        const errors = Object.assign(Object.create(null), {
           invalid_device_name: {
             status: 'DEVICE NAME REJECTED',
             message: '设备名称必须包含 1–64 个非控制字符。',
@@ -559,8 +559,11 @@
             message: 'Gateway 暂时无法完成请求，请稍后重试。',
             terminal: true
           }
-        };
-        return errors[code] || errors.internal_error;
+        });
+        if (typeof code !== 'string' || !Object.prototype.hasOwnProperty.call(errors, code)) {
+          return errors.internal_error;
+        }
+        return errors[code];
       }
 
       function appendDataRow(container, label, value) {

@@ -381,6 +381,22 @@ mod tests {
     }
 
     #[test]
+    fn api_error_mapping_rejects_prototype_and_non_string_codes() {
+        for required in [
+            "Object.create(null)",
+            "typeof code !== 'string'",
+            "Object.prototype.hasOwnProperty.call(errors, code)",
+            "return errors.internal_error",
+        ] {
+            assert!(TEMPLATE.contains(required), "missing {required}");
+        }
+        assert!(!TEMPLATE.contains("return errors[code] ||"));
+        for poisoned in ["toString:", "constructor:", "__proto__:"] {
+            assert!(!TEMPLATE.contains(poisoned), "poisoned map key {poisoned}");
+        }
+    }
+
+    #[test]
     fn template_has_visible_request_error_lifecycle() {
         for required in [
             "id=\"request-error\"",
