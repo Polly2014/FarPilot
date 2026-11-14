@@ -159,6 +159,46 @@ Do not remove `%LOCALAPPDATA%\FarPilot\host-identity.json` or `host-config.json`
 4. Create an SSH profile using Gateway hostname, port, user `farpilot`, and pinned fingerprint.
 5. Connect; Gateway must open Herdr, not a Linux shell.
 
+## CRT pairing page preview and visual acceptance
+
+The CRT pairing page is compiled into the Gateway binary and has no production debug route. Never create a live pairing token only to capture a screenshot, and never commit rendered preview HTML or screenshots containing real Host names, fingerprints, keys, or tokens.
+
+Before deployment, the coordinator may render a temporary, uncommitted preview through a local test harness using only these synthetic values:
+
+```text
+Host: Example DevBox
+Gateway: gateway.example.com:22
+Fingerprint: SHA256:synthetic-public-value
+Expiry: five minutes from preview start
+Claim path: /v1/pair/synthetic-token/claim
+```
+
+The temporary harness and rendered output must live outside tracked source files and be removed after inspection. If no such isolated harness is available, keep all browser rows below Pending; automated renderer tests are not a substitute for browser observation.
+
+Run the automated pairing checks first:
+
+```bash
+cargo test -p farpilot-gateway pairing_page --lib
+cargo test -p farpilot-gateway --test pairing_http
+```
+
+Then inspect the sanitized preview at 320 px, 390 px, and desktop width. Record only observed results in `docs/stage0-acceptance.md`:
+
+```text
+[ ] 320 px viewport has no horizontal scrolling
+[ ] 390 px and desktop layouts preserve the focused single-card hierarchy
+[ ] Long synthetic Host name wraps without overlap
+[ ] Full synthetic fingerprint wraps without truncation
+[ ] Labels, focus ring, keyboard order, and 44 px controls are usable
+[ ] Countdown reaches 00:00 and locks the form
+[ ] Ready, Submitting, field error, Network error, Success, Expired,
+    Invalid, RateLimited, and InternalError states render coherently
+[ ] prefers-reduced-motion disables cursor/glow animation
+[ ] Browser network log contains no external resource requests
+```
+
+Keep every unchecked row Pending. Real-device public pairing acceptance remains separate and requires an approved Gateway deployment.
+
 ## Revocation drill
 
 1. Run `sudo -u farpilot env FARPILOT_DATABASE_URL=sqlite:///var/lib/farpilot/farpilot.db /usr/local/bin/farpilot devices` on Gateway and verify the device fingerprint.

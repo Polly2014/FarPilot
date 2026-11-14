@@ -48,3 +48,36 @@ This section is separate from the nine completed Stage 0 criteria above. It reco
 | Live Gateway upgrade and health rollback | Pending | Requires a disposable/live Ubuntu maintenance window and operator approval |
 
 Do not mark the pending rows Pass from a dry-run artifact alone. Before public announcement, run the Release workflow with `dry_run=true`, inspect and validate its exact nine-file artifact, then complete fresh-device and live Gateway acceptance with sanitized evidence.
+
+## CRT pairing page acceptance
+
+This section records the server-rendered CRT pairing-page work separately from the original nine Stage 0 criteria and installer acceptance. No live pairing token, real Host metadata, SSH fingerprint, or public key was generated or recorded for this local verification.
+
+### Automated evidence
+
+| Check | Result | Sanitized evidence |
+|---|---|---|
+| Pairing-page renderer and state contracts | Pass | Fourteen renderer tests cover token inventory, escaping, per-response CSP nonce, generic error states, CRT/accessibility markers, countdown/state-machine contracts, visible network errors, safe success rendering, and prototype-safe API error mapping |
+| Pairing browser route integration | Pass | Eight HTTP tests cover valid themed pages, hostile metadata escaping, nonce/security headers, generic invalid/expired/consumed pages, rate limiting, internal/fallback pages, and unchanged JSON Claim behavior |
+| Full Rust workspace regression | Pass | Eighty-three workspace tests pass; Rust formatting, Clippy with warnings denied, and documentation tests pass |
+| Existing installer/security regressions | Pass | Release tooling, POSIX and Gateway installers, deployment assets, SSH restrictions, E2E harness, release workflow structure, and shell syntax checks pass |
+| External-resource static contract | Pass | Compiled template tests reject external scripts, stylesheets, fonts, images, iframes, prefetches, absolute HTTP(S) resources, and dangerous DOM sinks |
+| Live Gateway deployment | Pending | CRT page has not been deployed to the public Gateway |
+
+### Sanitized browser visual checklist
+
+The approved preview fixture is `Example DevBox`, `gateway.example.com:22`, a synthetic SHA256 value, a five-minute synthetic expiry, and `/v1/pair/synthetic-token/claim`. No committed production debug route exists. The following rows remain Pending until a coordinator renders that fixture through a temporary uncommitted harness and observes them in a browser.
+
+| Visual check | Result | Required observation |
+|---|---|---|
+| 320 px viewport | Pending | No horizontal scrolling; form and submit control remain reachable |
+| 390 px and desktop | Pending | Single-card hierarchy and CRT bezel remain intact |
+| Long synthetic Host | Pending | Wraps without status or metadata overlap |
+| Full synthetic fingerprint | Pending | Wraps without truncation and remains readable |
+| Labels, focus, keyboard, touch | Pending | Visible focus, logical tab order, associated labels, and controls at least 44 px high |
+| Countdown and expiry | Pending | `AUTH WINDOW` reaches `00:00`, disables input, and shows `SESSION EXPIRED` |
+| Interactive states | Pending | Ready, Submitting, field error, Network error, Success, Expired, Invalid, RateLimited, and InternalError remain visually coherent |
+| Reduced motion | Pending | Cursor/glow animation is disabled when reduced motion is requested |
+| Browser network log | Pending | No external resource requests are emitted by the token-bearing page |
+
+Do not promote these rows from Pending based only on source inspection or automated static contracts. Real public-device acceptance requires an approved deployment and must still use sanitized evidence.
