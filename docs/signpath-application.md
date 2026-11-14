@@ -98,7 +98,7 @@ See the [Security policy](../SECURITY.md).
 
 ## Installation and uninstall
 
-FarPilot provides verified direct installers for Windows, macOS, Linux, and the self-hosted Ubuntu Gateway. Every direct installer requires the release manifest's SHA-256 digest and verifies the staged binary version before activation.
+FarPilot implements verified direct-installer code for Windows, macOS, Linux, and the self-hosted Ubuntu Gateway, together with a tested five-platform release assembly. Public stable installer endpoints remain inactive until a signed stable Release exists and the reviewed Nginx configuration is deployed. When activated, every direct installer requires the release manifest's SHA-256 digest and verifies the staged binary version before activation.
 
 Windows provides transactional `-Uninstall` and confirmed `-PurgeState` modes. macOS/Linux CLI and Linux Gateway removal instructions use exact managed paths and preserve SSH material, Gateway databases, configuration, and certificates by default.
 

@@ -135,11 +135,16 @@ for required in \
   'Active maintenance evidence | **IMPLEMENTED BUT NOT PUBLIC**' \
   'Already released in signable form | **NOT SATISFIED**' \
   'No hacking tools | **EXTERNAL REVIEW REQUIRED**' \
-  'Application readiness: **BLOCKED** while any eligibility row is `PENDING`, `NOT SATISFIED`, or `EXTERNAL REVIEW REQUIRED`'; do
+  'Application readiness: **BLOCKED** while any eligibility row is `PENDING`, `NOT SATISFIED`, or `EXTERNAL REVIEW REQUIRED`' \
+  'public stable installer endpoints remain inactive until a signed stable Release exists and the reviewed Nginx configuration is deployed'; do
   grep -Fq "$required" "$signpath_application"
 done
 if grep -Fq 'credential testing, exploitation, persistence' "$signpath_application"; then
   echo 'SignPath application packet makes an absolute no-persistence claim' >&2
+  exit 1
+fi
+if grep -Fq 'FarPilot provides verified direct installers' "$signpath_application"; then
+  echo 'SignPath application packet overstates public installer availability' >&2
   exit 1
 fi
 if grep -Eqi 'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16}|(api[_-]?token|client[_-]?secret)[[:space:]]*[:=][[:space:]]*[^[][^[:space:]]+' "$signpath_application"; then
