@@ -417,6 +417,18 @@ mod tests {
     }
 
     #[test]
+    fn device_name_validation_counts_unicode_scalars_like_the_server() {
+        assert!(!TEMPLATE.contains("maxlength=\"64\""));
+        for required in [
+            "function validDeviceName(deviceName)",
+            "const deviceNameLength = Array.from(deviceName).length",
+            "deviceNameLength >= 1 && deviceNameLength <= 64",
+        ] {
+            assert!(TEMPLATE.contains(required), "missing {required}");
+        }
+    }
+
+    #[test]
     fn success_renderer_uses_only_allowlisted_connection_fields() {
         for required in [
             "ssh_host",

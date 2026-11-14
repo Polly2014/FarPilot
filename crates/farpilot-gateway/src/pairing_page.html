@@ -372,7 +372,7 @@
 
         <form id="pair-form" novalidate>
           <label for="device-name">DEVICE_NAME</label>
-          <input id="device-name" name="device-name" maxlength="64" required autocomplete="off" aria-describedby="device-error">
+          <input id="device-name" name="device-name" required autocomplete="off" aria-describedby="device-error">
           <p id="device-error" class="field-error" hidden></p>
 
           <label for="ssh-key">SSH_ED25519_PUBLIC_KEY</label>
@@ -624,11 +624,17 @@
         pageStatus.textContent = 'PAIRING COMPLETE。设备授权成功。';
       }
 
+      function validDeviceName(deviceName) {
+        const deviceNameLength = Array.from(deviceName).length;
+        return deviceNameLength >= 1 && deviceNameLength <= 64 &&
+          !/[\u0000-\u001f\u007f-\u009f]/u.test(deviceName);
+      }
+
       function validateFields() {
         clearErrors();
         const deviceName = deviceInput.value.trim();
         const sshKey = keyInput.value.trim();
-        if (deviceName.length < 1 || deviceName.length > 64 || /[\u0000-\u001f\u007f-\u009f]/u.test(deviceName)) {
+        if (!validDeviceName(deviceName)) {
           setFieldError(deviceInput, deviceError, 'INVALID DEVICE NAME', '仅支持 1–64 个非控制字符。');
           deviceInput.focus();
           return null;
