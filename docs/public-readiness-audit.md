@@ -115,9 +115,7 @@ Do not commit either raw report. Update this document with category counts and d
 
 1. Privately review and disposition every remaining FarPilot identifier, internal-hostname, and private-address finding.
 2. Complete the SignPath-specific malware/PUA behavior review.
-3. Record Polly's confirmation that the historical `qq.com` author-email domain is acceptable for public disclosure.
-4. Record Polly's GitHub MFA confirmation.
-5. Rerun both scanners, cargo-deny, and the full verification matrix at the final visibility candidate commit.
+3. Rerun both scanners, cargo-deny, and the full verification matrix at the final visibility candidate commit.
 
 ## Visibility gate
 

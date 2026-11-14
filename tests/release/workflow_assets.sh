@@ -9,6 +9,8 @@ ci="$root/.github/workflows/ci.yml"
 ruby - "$release" "$ci" <<'RUBY'
 require "yaml"
 
+CARGO_DENY_ACTION = "taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21" # v2.90.4
+
 release_path, ci_path = ARGV
 
 def load_workflow(path)
@@ -30,7 +32,7 @@ end
 def assert_dependency_policy_step(job, label)
   steps = job.fetch("steps", [])
   install_index = steps.index do |step|
-    step["uses"] == "taiki-e/install-action@v2" &&
+    step["uses"] == CARGO_DENY_ACTION &&
       step.dig("with", "tool") == "cargo-deny@0.20.2" &&
       step.dig("with", "fallback") == "none"
   end
@@ -145,6 +147,10 @@ mutations = {
   "unguarded publish" => ->(doc) { doc["jobs"]["publish"]["if"] = "always()" },
   "missing installer" => ->(doc) { doc["jobs"]["assemble"]["steps"].reject! { |step| step.to_s.include?("install-gateway.sh") } },
   "missing dependency policy run" => ->(doc) { doc["jobs"]["quality"]["steps"].reject! { |step| step["name"] == "Verify dependency policy" } },
+  "mutable cargo-deny action" => ->(doc) {
+    step = doc["jobs"]["quality"]["steps"].find { |candidate| candidate["uses"]&.start_with?("taiki-e/install-action@") }
+    step["uses"] = "taiki-e/install-action@v2"
+  },
   "manual publishing" => ->(doc) { doc["jobs"]["publish"]["if"] = "github.event_name == 'workflow_dispatch' && inputs.dry_run == false" },
 }
 mutations.each do |name, mutation|
@@ -165,8 +171,18 @@ end
 begin
   validate_ci(ci_without_dependency_run)
 rescue RuntimeError
-  puts "release workflow structure verified"
-  exit 0
+  ci_with_mutable_action = Marshal.load(Marshal.dump(ci))
+  mutable_step = ci_with_mutable_action["jobs"]["quality"]["steps"].find do |step|
+    step["uses"]&.start_with?("taiki-e/install-action@")
+  end
+  mutable_step["uses"] = "taiki-e/install-action@v2"
+  begin
+    validate_ci(ci_with_mutable_action)
+  rescue RuntimeError
+    puts "release workflow structure verified"
+    exit 0
+  end
+  raise "workflow validator accepted normal CI with mutable cargo-deny action"
 end
 raise "workflow validator accepted normal CI without dependency policy execution"
 RUBY

@@ -10,6 +10,8 @@ stable="$root/.github/workflows/release.yml"
 ruby - "$workflow" "$ci" "$stable" <<'RUBY'
 require "yaml"
 
+CARGO_DENY_ACTION = "taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21" # v2.90.4
+
 workflow_path, ci_path, stable_path = ARGV
 
 def load_yaml(path)
@@ -31,7 +33,7 @@ end
 def assert_dependency_policy_step(job)
   steps = job.fetch("steps", [])
   install_index = steps.index do |step|
-    step["uses"] == "taiki-e/install-action@v2" &&
+    step["uses"] == CARGO_DENY_ACTION &&
       step.dig("with", "tool") == "cargo-deny@0.20.2" &&
       step.dig("with", "fallback") == "none"
   end
@@ -178,6 +180,10 @@ mutations = {
   "extra installer" => ->(doc) { doc["jobs"]["publish"]["steps"] << {"run" => "cp install.sh release/install.sh"} },
   "missing quality" => ->(doc) { doc["jobs"]["windows"]["needs"] = nil },
   "missing dependency policy run" => ->(doc) { doc["jobs"]["quality"]["steps"].reject! { |step| step["name"] == "Verify dependency policy" } },
+  "mutable cargo-deny action" => ->(doc) {
+    step = doc["jobs"]["quality"]["steps"].find { |candidate| candidate["uses"]&.start_with?("taiki-e/install-action@") }
+    step["uses"] = "taiki-e/install-action@v2"
+  },
   "missing verify tag" => ->(doc) { doc["jobs"]["publish"]["steps"].each { |step| step["run"]&.gsub!("--verify-tag", "") } },
   "target override" => ->(doc) { doc["jobs"]["publish"]["steps"].each { |step| step["run"]&.gsub!("--prerelease", "--prerelease --target $GITHUB_SHA") } },
   "missing ref creation" => ->(doc) { doc["jobs"]["publish"]["steps"].reject! { |step| step.to_s.include?("/git/refs") } },

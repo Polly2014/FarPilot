@@ -45,6 +45,16 @@ if sqlx.get("git") != "https://github.com/transact-rs/sqlx" or sqlx.get("rev") !
     raise SystemExit("SQLx must be pinned to the reviewed official security revision")
 if sqlx.get("version") != "=0.9.0" or sqlx.get("default-features", True):
     raise SystemExit("SQLx version/default feature policy is incorrect")
+expected_sqlx_features = {"runtime-tokio", "sqlite-bundled", "migrate", "macros"}
+actual_sqlx_features = set(sqlx.get("features", []))
+if actual_sqlx_features != expected_sqlx_features:
+    raise SystemExit(
+        f"SQLx features must be exactly {sorted(expected_sqlx_features)}, "
+        f"found {sorted(actual_sqlx_features)}"
+    )
+for forbidden in ("sqlite", "sqlite-deserialize", "sqlite-load-extension", "sqlite-unlock-notify"):
+    if forbidden in actual_sqlx_features:
+        raise SystemExit(f"SQLx forbidden feature enabled: {forbidden}")
 for dependency in ("reqwest", "tokio-tungstenite"):
     features = workspace["workspace"]["dependencies"][dependency].get("features", [])
     if not any("native-roots" in feature for feature in features) or any("webpki" in feature for feature in features):
