@@ -66,18 +66,25 @@ This section records the server-rendered CRT pairing-page work separately from t
 
 ### Sanitized browser visual checklist
 
-The approved preview fixture is `Example DevBox`, `gateway.example.com:22`, a synthetic SHA256 value, a five-minute synthetic expiry, and `/v1/pair/synthetic-token/claim`. No committed production debug route exists. The following rows remain Pending until a coordinator renders that fixture through a temporary uncommitted harness and observes them in a browser.
+The approved preview fixture is `Example DevBox`, `gateway.example.com:22`, a synthetic SHA256 value, a five-minute synthetic expiry, and `/v1/pair/synthetic-token/claim`. No committed production debug route exists. On 2026-11-14, the coordinator rendered that fixture through a temporary uncommitted harness and inspected it with headless Chromium and Playwright. Screenshots were stored only in job-scoped temporary storage and were not committed.
 
-| Visual check | Result | Required observation |
+| Visual check | Result | Sanitized observation |
 |---|---|---|
-| 320 px viewport | Pending | No horizontal scrolling; form and submit control remain reachable |
-| 390 px and desktop | Pending | Single-card hierarchy and CRT bezel remain intact |
-| Long synthetic Host | Pending | Wraps without status or metadata overlap |
-| Full synthetic fingerprint | Pending | Wraps without truncation and remains readable |
-| Labels, focus, keyboard, touch | Pending | Visible focus, logical tab order, associated labels, and controls at least 44 px high |
-| Countdown and expiry | Pending | `AUTH WINDOW` reaches `00:00`, disables input, and shows `SESSION EXPIRED` |
-| Interactive states | Pending | Ready, Submitting, field error, Network error, Success, Expired, Invalid, RateLimited, and InternalError remain visually coherent |
-| Reduced motion | Pending | Cursor/glow animation is disabled when reduced motion is requested |
-| Browser network log | Pending | No external resource requests are emitted by the token-bearing page |
+| 320 px viewport | Pass | No horizontal scrolling; the long synthetic Host and submit control remained reachable |
+| 390 px and desktop | Pass | The focused single-card hierarchy and CRT bezel remained intact at 390×844 and 1280×900; desktop shell stayed at or below 560 px |
+| Long synthetic Host | Pass | Full synthetic text was present and wrapped without status or metadata overlap |
+| Full synthetic fingerprint | Pass | Full synthetic value was present, wrapped without truncation, and its element had no horizontal overflow |
+| Focus and touch target | Pass | Empty submission showed visible `INVALID DEVICE NAME`, focused the name field, and the submit control measured at least 44 px high |
+| Countdown display | Pass | Ready state populated the `AUTH WINDOW` countdown from the synthetic expiry |
+| Natural `00:00` transition | Pending | The rendered Expired state was inspected, but a real-time five-minute countdown-to-zero transition was not observed end to end |
+| Interactive states | Pass | Ready, synthetic pending `AUTHORIZING...`, field error, visible Network error, intercepted synthetic Success, Expired, Invalid, RateLimited, and InternalError headings rendered coherently |
+| Success data minimization | Pass | Synthetic `201` displayed `PAIRING COMPLETE`, `SESSION SEALED`, and allowlisted connection details; `device_id` and `host_id` were not shown |
+| Reduced motion | Pass | Reduced-motion context disabled the default animation duration and constrained iteration to one |
+| Browser network log | Pass | Request capture contained only the preview document and the synthetic Claim request after submission; no external or subresource requests occurred |
+| Browser console | Pass | No console errors were collected for the observed states |
+| CRT readability and layout | Pass | Ready, long-value, Success, and Expired screenshots were manually inspected and accepted for CRT style, readability, and layout |
+| Keyboard tab order and semantic labels | Pending | Automated DOM contracts pass, but this was not manually traversed in the browser acceptance run |
+| iPhone Safari software keyboard | Pending | Chromium viewport testing does not prove that the iPhone Safari software keyboard leaves the submit control reachable |
+| Live deployed QR/Moshi flow | Pending | Requires an approved Gateway deployment and a separately authorized real-device pairing session |
 
-Do not promote these rows from Pending based only on source inspection or automated static contracts. Real public-device acceptance requires an approved deployment and must still use sanitized evidence.
+Do not promote the remaining Pending rows from source inspection, Chromium viewport checks, or automated static contracts alone. Real public-device acceptance requires an approved deployment and must still use sanitized evidence.

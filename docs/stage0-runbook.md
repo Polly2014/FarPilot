@@ -182,22 +182,31 @@ cargo test -p farpilot-gateway pairing_page --lib
 cargo test -p farpilot-gateway --test pairing_http
 ```
 
-Then inspect the sanitized preview at 320 px, 390 px, and desktop width. Record only observed results in `docs/stage0-acceptance.md`:
+Then inspect the sanitized preview at 320 px, 390 px, and desktop width. A reproducible run should use browser automation for geometry/state assertions and manually inspect a small set of temporary screenshots. Keep rendered HTML and screenshots in job-scoped temporary storage outside the repository, and remove them with the job; never record absolute temporary paths. Record only observed results in `docs/stage0-acceptance.md`.
+
+The 2026-11-14 Chromium/Playwright acceptance observed:
 
 ```text
-[ ] 320 px viewport has no horizontal scrolling
-[ ] 390 px and desktop layouts preserve the focused single-card hierarchy
-[ ] Long synthetic Host name wraps without overlap
-[ ] Full synthetic fingerprint wraps without truncation
-[ ] Labels, focus ring, keyboard order, and 44 px controls are usable
-[ ] Countdown reaches 00:00 and locks the form
-[ ] Ready, Submitting, field error, Network error, Success, Expired,
-    Invalid, RateLimited, and InternalError states render coherently
-[ ] prefers-reduced-motion disables cursor/glow animation
-[ ] Browser network log contains no external resource requests
+[x] 320 px viewport had no horizontal scrolling
+[x] 390 px and desktop layouts preserved the focused single-card hierarchy
+[x] Long synthetic Host name wrapped without overlap
+[x] Full synthetic fingerprint wrapped without truncation or element overflow
+[x] Visible field error focused DEVICE_NAME; submit control was at least 44 px
+[x] AUTH WINDOW populated from the synthetic expiry
+[x] Ready, synthetic Submitting, field error, Network error, Success, Expired,
+    Invalid, RateLimited, and InternalError states rendered coherently
+[x] Synthetic 201 rendered only allowlisted details and hid device_id/host_id
+[x] prefers-reduced-motion disabled the default animation
+[x] Browser request capture contained no external or subresource requests
+[x] Browser console collection contained no errors for observed states
+[x] Ready, long-value, Success, and Expired screenshots passed manual CRT review
+[ ] Natural five-minute countdown reached 00:00 and locked the live form
+[ ] Keyboard tab order and semantic labels were manually traversed
+[ ] iPhone Safari software keyboard left the submit control reachable
+[ ] Live deployed QR/Moshi pairing completed through the public Gateway
 ```
 
-Keep every unchecked row Pending. Real-device public pairing acceptance remains separate and requires an approved Gateway deployment.
+Keep every unchecked row Pending. In particular, Chromium viewport simulation does not establish iPhone Safari software-keyboard behavior. Real-device public pairing acceptance remains separate and requires an approved Gateway deployment.
 
 ## Revocation drill
 
