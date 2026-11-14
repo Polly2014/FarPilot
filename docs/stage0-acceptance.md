@@ -88,3 +88,22 @@ The approved preview fixture is `Example DevBox`, `gateway.example.com:22`, a sy
 | Live deployed QR/Moshi flow | Pending | Requires an approved Gateway deployment and a separately authorized real-device pairing session |
 
 Do not promote the remaining Pending rows from source inspection, Chromium viewport checks, or automated static contracts alone. Real public-device acceptance requires an approved deployment and must still use sanitized evidence.
+
+## SignPath public-readiness acceptance
+
+This section is separate from Stage 0 product acceptance. It records only sanitized evidence for the future public-repository and SignPath application gates.
+
+| Check | Result | Sanitized evidence |
+|---|---|---|
+| Built-in tracked-tree/history audit | Blocked | Scanner completed against the private readiness branch and all reachable refs; 6 high-severity and 26 review findings require complementary private disposition. Raw matches and paths are not committed |
+| Complementary Gitleaks audit | Pending | `gitleaks` was unavailable and was not downloaded automatically |
+| Dependency/license audit | Pending | Cargo metadata found 305 packages and zero missing license expressions, but `cargo-deny` was unavailable, so advisory/license/ban/source policy is incomplete |
+| Tracked-file review | Pass | 105 tracked entries, no regular file over 1 MiB, no submodule, and no Git LFS pointer candidate |
+| Author identity review | Pending | One historical email domain is present across 94 commits; Polly must confirm that its public disclosure is acceptable |
+| SignPath malware/PUA and proprietary-component review | Pending | Existing automated security tests pass, but the SignPath-specific eligibility disposition is incomplete |
+| Full local regression | Pass | Rust formatting, Clippy, workspace/doc tests, audit 17/17, release 20/20, installers, deployment, SSH restriction, E2E, workflow mutation, and shell syntax checks passed |
+| Repository visibility change | Not authorized | Repository remains Private; External Gate A has not been approved |
+| Unsigned application prerelease | Not published | External Gate B has not been approved or dispatched |
+| SignPath application | Not submitted | External Gate C remains blocked by public-readiness items |
+
+Do not change repository visibility or publish the unsigned prerelease while `docs/public-readiness-audit.md` is `BLOCKED`.
