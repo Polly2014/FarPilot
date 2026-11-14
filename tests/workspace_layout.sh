@@ -136,7 +136,7 @@ for required in \
   'Already released in signable form | **NOT SATISFIED**' \
   'No hacking tools | **EXTERNAL REVIEW REQUIRED**' \
   'Application readiness: **BLOCKED** while any eligibility row is `PENDING`, `NOT SATISFIED`, or `EXTERNAL REVIEW REQUIRED`' \
-  'public stable installer endpoints remain inactive until a signed stable Release exists and the reviewed Nginx configuration is deployed'; do
+  'Public stable installer endpoints remain inactive until a signed stable Release exists and the reviewed Nginx configuration is deployed'; do
   grep -Fq "$required" "$signpath_application"
 done
 if grep -Fq 'credential testing, exploitation, persistence' "$signpath_application"; then
