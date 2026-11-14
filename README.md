@@ -121,6 +121,17 @@ Every direct installer requires the release manifest's SHA-256 digest and verifi
 
 Read [Installer security](docs/installer-security.md) for the trust boundary, rollback guarantees, and inspect-before-execute commands.
 
+## Security and project policies
+
+FarPilot is preparing for public open-source review and SignPath Foundation code signing. The repository has not yet been accepted by SignPath, no certificate is active, and no signed stable Windows release has been published.
+
+- [Code signing policy](docs/code-signing-policy.md)
+- [Privacy policy](docs/privacy-policy.md)
+- [Uninstall](docs/uninstall.md) — planned guidance; added by the uninstall-readiness task before public conversion
+- [Security](SECURITY.md)
+
+FarPilot currently has one maintainer. Signing-related source, workflow, and release changes remain subject to automated security gates and explicit manual approval.
+
 ## Operations and design
 
 - [Stage 0 runbook](docs/stage0-runbook.md)
