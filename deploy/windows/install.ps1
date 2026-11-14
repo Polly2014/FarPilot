@@ -759,8 +759,8 @@ function Invoke-FarPilotUninstall {
         return
     }
     if (-not (Test-RegularDirectory $Root)) { throw "Refusing unsafe FarPilot root during uninstall: $Root" }
-    $currentState = Get-JunctionState -Path $CurrentDir -ReleasesDir $ReleasesDir -AllowLegacyBinary $false
-    $binState = Get-JunctionState -Path $BinDir -ReleasesDir $ReleasesDir -AllowLegacyBinary $true
+    Get-JunctionState -Path $CurrentDir -ReleasesDir $ReleasesDir -AllowLegacyBinary $false | Out-Null
+    Get-JunctionState -Path $BinDir -ReleasesDir $ReleasesDir -AllowLegacyBinary $true | Out-Null
     $taskState = Get-FarPilotStartupTaskState
     $pathState = Get-UserPathState
     $processState = @(Get-ManagedFarPilotProcessState)
