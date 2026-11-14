@@ -593,6 +593,8 @@ try {
     $customRoot = Join-Path $customInstall 'FarPilot'
     $customState = Get-Content -LiteralPath (Join-Path $customRoot 'install-state.json') -Raw | ConvertFrom-Json
     Assert-Equal -Expected ([IO.Path]::GetFullPath($customBin).TrimEnd('\')) -Actual ([string]$customState.visible_bin) -Message 'custom visible bin was not persisted'
+    $customStateArtifacts = @(Get-ChildItem -LiteralPath $customRoot -Force | Where-Object { $_.Name -like '.install-state.*' })
+    Assert-Equal -Expected 0 -Actual $customStateArtifacts.Count -Message 'custom upgrade left install-state temp or backup artifacts'
     $defaultBin = Join-Path $customRoot 'bin'
     New-Item -ItemType Directory -Path $defaultBin | Out-Null
     'default-bin-sentinel' | Set-Content -LiteralPath (Join-Path $defaultBin 'keep.txt')
@@ -623,6 +625,21 @@ try {
     Assert-Equal -Expected $corruptTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $corruptState) 'task.json') -Raw) -Message 'corrupt install-state changed task'
     Assert-Equal -Expected $corruptPathJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $corruptState) 'path.json') -Raw) -Message 'corrupt install-state changed PATH'
     Assert-Equal -Expected 'external-state' -Actual (Get-Content -LiteralPath (Join-Path $externalMetadataTarget 'keep.txt') -Raw).Trim() -Message 'corrupt install-state touched external target'
+
+    # Failed atomic install-state replacement preserves the previous metadata and activation.
+    $stateRollback = Initialize-ScenarioRoot 'install-state-replace-failure'
+    Install-Fixture -Scenario $stateRollback -Package $packages['0.2.0'] -Version '0.2.0' | Out-Null
+    $stateRollbackRoot = Join-Path $stateRollback 'FarPilot'
+    $statePath = Join-Path $stateRollbackRoot 'install-state.json'
+    $stateHashBefore = (Get-FileHash -Algorithm SHA256 -LiteralPath $statePath).Hash
+    $stateCurrentBefore = Get-JunctionTarget (Join-Path $stateRollbackRoot 'current')
+    $stateFailure = Invoke-InstallerProcess -LocalAppData $stateRollback -PackagePath $packages['0.2.1'] -Version '0.2.1' -Sha256 (Get-FileHash -Algorithm SHA256 $packages['0.2.1']).Hash -FailAfter 'DuringInstallStateReplace'
+    Assert-True ($stateFailure.ExitCode -ne 0) 'install-state replacement failure unexpectedly succeeded'
+    Assert-Equal -Expected $stateHashBefore -Actual (Get-FileHash -Algorithm SHA256 -LiteralPath $statePath).Hash -Message 'install-state replacement failure changed prior metadata'
+    Assert-Equal -Expected $stateCurrentBefore -Actual (Get-JunctionTarget (Join-Path $stateRollbackRoot 'current')) -Message 'install-state replacement failure changed current'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $stateRollbackRoot 'releases\0.2.1-x86_64-pc-windows-msvc'))) 'install-state replacement failure left new release'
+    $stateFailureArtifacts = @(Get-ChildItem -LiteralPath $stateRollbackRoot -Force | Where-Object { $_.Name -like '.install-state.*' })
+    Assert-Equal -Expected 0 -Actual $stateFailureArtifacts.Count -Message 'install-state replacement failure left temp or backup artifacts'
 
     # Purge mode validation fails before mutation when Uninstall or confirmation is missing.
     $purgeValidation = Initialize-ScenarioRoot 'purge-validation'

@@ -12,7 +12,7 @@ param(
     [string]$LocalPackageVersion,
     [string]$LocalPackageSha256,
     [string]$TestStateDirectory,
-    [ValidateSet('', 'DuringPathStateCapture', 'DuringManagedProcessStop', 'DuringTaskRemoval', 'DuringPathRemoval', 'DuringAliasQuarantine', 'DuringReleaseQuarantine', 'DuringUninstallCleanup', 'AfterCurrentJunction', 'AfterBinJunction', 'AfterPathUpdate', 'DuringTaskUpdate', 'DuringTaskStart', 'DuringCleanup')]
+    [ValidateSet('', 'DuringPathStateCapture', 'DuringManagedProcessStop', 'DuringTaskRemoval', 'DuringPathRemoval', 'DuringAliasQuarantine', 'DuringReleaseQuarantine', 'DuringUninstallCleanup', 'DuringInstallStateReplace', 'AfterCurrentJunction', 'AfterBinJunction', 'AfterPathUpdate', 'DuringTaskUpdate', 'DuringTaskStart', 'DuringCleanup')]
     [string]$TestFailAfter = ''
 )
 
@@ -676,7 +676,7 @@ function Invoke-UserPathRemoval {
 function Get-FarPilotInstallState {
     param([string]$Path, [string]$DefaultBinDir)
     if (-not (Test-Path -LiteralPath $Path)) {
-        return [PSCustomObject]@{ Exists = $false; Raw = $null; VisibleBin = (Get-CanonicalPath $DefaultBinDir) }
+        return [PSCustomObject]@{ Exists = $false; Raw = $null; Bytes = $null; VisibleBin = (Get-CanonicalPath $DefaultBinDir) }
     }
     if (-not (Test-RegularFile $Path)) { throw "Refusing unsafe FarPilot install-state file: $Path" }
     $raw = Get-Content -LiteralPath $Path -Raw
@@ -687,33 +687,65 @@ function Get-FarPilotInstallState {
     }
     $visibleBin = Get-CanonicalPath ([string]$value.visible_bin)
     if (-not [IO.Path]::IsPathRooted($visibleBin)) { throw 'FarPilot visible bin path must be absolute' }
-    return [PSCustomObject]@{ Exists = $true; Raw = $raw; VisibleBin = $visibleBin }
+    return [PSCustomObject]@{ Exists = $true; Raw = $raw; Bytes = [IO.File]::ReadAllBytes($Path); VisibleBin = $visibleBin }
 }
 
 function Write-FarPilotInstallState {
     param([string]$Path, [string]$VisibleBin)
     $parent = Split-Path -Parent $Path
     New-Item -ItemType Directory -Force -Path $parent | Out-Null
-    $temp = Join-Path $parent ('.install-state.' + [guid]::NewGuid().ToString('N') + '.json')
+    $identifier = [guid]::NewGuid().ToString('N')
+    $temp = Join-Path $parent ('.install-state.' + $identifier + '.json')
+    $backup = Join-Path $parent ('.install-state.backup.' + $identifier + '.json')
     try {
         [PSCustomObject]@{ schema_version = 1; visible_bin = (Get-CanonicalPath $VisibleBin) } |
             ConvertTo-Json | Set-Content -LiteralPath $temp -Encoding UTF8
         if (Test-Path -LiteralPath $Path) {
-            [IO.File]::Replace($temp, $Path, $null)
+            Invoke-TestFailure -Point 'DuringInstallStateReplace'
+            try {
+                [IO.File]::Replace($temp, $Path, $backup)
+            } catch {
+                $replaceError = $_
+                if (Test-Path -LiteralPath $backup) {
+                    if (Test-Path -LiteralPath $Path) {
+                        if (-not (Test-RegularFile $Path)) { throw "Install-state replacement left an unsafe destination: $Path" }
+                        Remove-Item -LiteralPath $Path -Force
+                    }
+                    [IO.File]::Move($backup, $Path)
+                }
+                throw $replaceError
+            }
+            Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
         } else {
             [IO.File]::Move($temp, $Path)
         }
     } finally {
         Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
     }
 }
 
 function Restore-FarPilotInstallState {
     param([string]$Path, [object]$State)
-    if ($State.Exists) {
-        $State.Raw | Set-Content -LiteralPath $Path -Encoding UTF8
-    } else {
+    if (-not $State.Exists) {
         Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        return
+    }
+    $parent = Split-Path -Parent $Path
+    $identifier = [guid]::NewGuid().ToString('N')
+    $temp = Join-Path $parent ('.install-state.restore.' + $identifier + '.json')
+    $backup = Join-Path $parent ('.install-state.restore-backup.' + $identifier + '.json')
+    try {
+        [IO.File]::WriteAllBytes($temp, [byte[]]$State.Bytes)
+        if (Test-Path -LiteralPath $Path) {
+            [IO.File]::Replace($temp, $Path, $backup)
+            Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+        } else {
+            [IO.File]::Move($temp, $Path)
+        }
+    } finally {
+        Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
     }
 }
 
