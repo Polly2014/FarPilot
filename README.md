@@ -129,6 +129,7 @@ SignPath readiness is in progress. FarPilot is preparing for public open-source 
 - [Privacy policy](docs/privacy-policy.md)
 - [Uninstall](docs/uninstall.md)
 - [Security](SECURITY.md)
+- [SignPath application readiness](docs/signpath-application.md)
 
 Windows now provides transactional `-Uninstall` and confirmed `-PurgeState` modes. The uninstall guide documents conservative removal for every role.
 

@@ -20,6 +20,7 @@ privacy_policy="$root/docs/privacy-policy.md"
 security_policy="$root/SECURITY.md"
 codeowners="$root/.github/CODEOWNERS"
 uninstall_doc="$root/docs/uninstall.md"
+signpath_application="$root/docs/signpath-application.md"
 
 test -f "$security"
 test -f "$signing_policy"
@@ -107,3 +108,33 @@ grep -Fq 'does not indicate current SignPath sponsorship or signing' "$signing_p
 grep -Fq 'FarPilot software sends no telemetry' "$privacy_policy"
 grep -Fq 'aggregate release-asset download counts' "$privacy_policy"
 grep -Fq 'no downloader identity' "$privacy_policy"
+test -f "$signpath_application"
+grep -Fq '[SignPath application readiness](docs/signpath-application.md)' "$readme"
+for required in \
+  'Repository visibility: PRIVATE' \
+  'Application: NOT SUBMITTED' \
+  'Unsigned prerelease: NOT PUBLISHED' \
+  'Anonymous link access: NOT AVAILABLE' \
+  'MFA: USER CONFIRMATION REQUIRED' \
+  'v0.1.0-unsigned.1' \
+  'Author: Polly / Polly2014' \
+  'Reviewer: Polly / Polly2014' \
+  'Approver: Polly / Polly2014' \
+  'authorized self-hosted SSH terminal relay' \
+  'not an offensive security tool' \
+  '[Code signing policy](code-signing-policy.md)' \
+  '[Privacy policy](privacy-policy.md)' \
+  '[Uninstall guide](uninstall.md)' \
+  '[Security policy](../SECURITY.md)' \
+  '[Unsigned application workflow](../.github/workflows/signpath-application.yml)' \
+  '[ENTER DIRECTLY IN SIGNPATH FORM — DO NOT COMMIT]'; do
+  grep -Fq "$required" "$signpath_application"
+done
+if grep -Eqi 'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16}|(api[_-]?token|client[_-]?secret)[[:space:]]*[:=][[:space:]]*[^[][^[:space:]]+' "$signpath_application"; then
+  echo 'SignPath application packet contains a token-like committed value' >&2
+  exit 1
+fi
+if grep -Eqi '(home|street|postal|legal)[[:space:]_-]*(address|name)[[:space:]]*:[[:space:]]*[A-Za-z0-9]' "$signpath_application"; then
+  echo 'SignPath application packet contains real-looking private identity data' >&2
+  exit 1
+fi
