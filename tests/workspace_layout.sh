@@ -137,6 +137,7 @@ for required in \
   'OSI-approved project license | **PASS**' \
   'Dependency/license audit and no proprietary bundled components | **PASS**' \
   'Historical author-email disclosure | **ACCEPTED' \
+  'Public-readiness tree/history audit | **PASS — External Gate A completed' \
   'Active maintenance evidence | **PASS**' \
   'Already released in signable form | **NOT SATISFIED**' \
   'No hacking tools | **EXTERNAL REVIEW REQUIRED**' \
@@ -144,6 +145,10 @@ for required in \
   'Public stable installer endpoints remain inactive until a signed stable Release exists and the reviewed Nginx configuration is deployed'; do
   grep -Fq "$required" "$signpath_application"
 done
+if grep -Fq 'Public-readiness tree/history audit | **READY FOR VISIBILITY REVIEW' "$signpath_application"; then
+  echo 'SignPath application checklist retains stale pre-Gate-A readiness status' >&2
+  exit 1
+fi
 if grep -Fq 'credential testing, exploitation, persistence' "$signpath_application"; then
   echo 'SignPath application packet makes an absolute no-persistence claim' >&2
   exit 1

@@ -167,7 +167,7 @@ SignPath has not approved FarPilot, the `release-signing` Environment is not con
 | Privacy policy prepared | **YES — public on `main`** |
 | Security reporting policy prepared | **YES — public on `main`** |
 | Uninstall implementation and guide prepared | **YES — public on `main`** |
-| Public-readiness tree/history audit | **READY FOR VISIBILITY REVIEW — built-in findings privately dispositioned; Gitleaks complementary scan reviewed** |
+| Public-readiness tree/history audit | **PASS — External Gate A completed; built-in findings privately dispositioned and Gitleaks complementary scan reviewed** |
 | Historical author-email disclosure | **ACCEPTED — Polly confirmed on 2026-11-15 that the `qq.com` author domain in existing commits may be public** |
 | Complementary Gitleaks audit | **COMPLETED — one synthetic plan marker reviewed as a false positive; no other finding** |
 | Dependency/license policy audit | **PASS — cargo-deny advisories/licenses/sources/bans pass; patched SQLite 3.54.1 is used, wildcard path dependencies are versioned, and non-OSI webpki root-data dependencies were removed** |
