@@ -103,8 +103,11 @@ This section is separate from Stage 0 product acceptance. It records only saniti
 | SignPath proprietary-component review | Pass for current graph | Cargo license/source policy passes and the exact release assembly contains no third-party executable artifact |
 | SignPath malware/PUA behavior review | Pass for internal readiness | Production source and behavior were reviewed as an authorized self-hosted relay with explicit grants, fixed Herdr launch, restricted SSH ingress, removable user-visible startup, and no scanning/exploitation/evasion or project telemetry; SignPath retains final no-hacking-tools classification authority |
 | Full local regression | Pass | Rust formatting, Clippy, workspace/doc tests, audit 17/17, release 20/20, installers, deployment, SSH restriction, E2E, workflow mutation, and shell syntax checks passed |
-| Repository visibility change | Not authorized | Repository remains Private; External Gate A has not been approved |
+| Repository visibility change | Pass | External Gate A was explicitly approved; `Polly2014/FarPilot` is Public and anonymous source/policy access was verified on 2026-11-15 |
+| Public repository security settings | Pass | Secret scanning, push protection, and Dependabot security updates are enabled |
+| Public `main` CI | Pass | Run `43669176238` completed successfully across Windows, macOS, Ubuntu, OpenSSH security, formatting, lint, installer, audit, and dependency-policy jobs |
+| `main` branch protection | Deferred by owner | Polly explicitly chose not to enable branch protection at this time; no protection is claimed |
 | Unsigned application prerelease | Not published | External Gate B has not been approved or dispatched |
-| SignPath application | Not submitted | External Gate C remains blocked by public-readiness items |
+| SignPath application | Not submitted | External Gate C remains unauthorized; SignPath retains final no-hacking-tools classification authority |
 
-`docs/public-readiness-audit.md` is ready for visibility review, but repository visibility, unsigned prerelease publication, and SignPath application still require their separate explicit external-gate approvals.
+External Gate A is complete. Unsigned prerelease publication and SignPath application submission still require their separate explicit Gate B and Gate C approvals.

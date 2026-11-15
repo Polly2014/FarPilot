@@ -1,10 +1,12 @@
 # FarPilot Public Readiness Audit
 
-**Status:** READY FOR VISIBILITY REVIEW
+**Status:** PUBLIC — EXTERNAL GATE A COMPLETE
 
-**Repository visibility:** Private
+**Repository visibility:** Public
 
-**Final private review date/revision:** 2026-11-15 at `4b3defda9236`
+**Final private review date/revision:** 2026-11-15 at `98781cd`
+
+**Public conversion verification:** 2026-11-15; anonymous access and public CI verified
 
 This committed file records only sanitized counts and dispositions. Raw scanner output, matching values, private paths, identity documents, and credentials remain outside the repository in mode-0600 private job storage.
 
@@ -17,12 +19,12 @@ This committed file records only sanitized counts and dispositions. Raw scanner 
 | Gitleaks 8.30.1 | Pass after reviewed false positive | Redacted full-history scan returned one `private-key` rule finding. It is the intentionally synthetic marker in `docs/plans/2026-11-14-farpilot-signpath-readiness-implementation.md`, not key material. No other Gitleaks finding was reported |
 | FarPilot-specific prohibited-data review | Pass after private disposition | All 11 FarPilot identifiers are synthetic test values; all 3 internal-hostname findings are scanner test fixtures; all 13 private-address findings are prefix-only numeric false positives with zero valid RFC1918 address found |
 | Tracked large/generated-file review | Pass | 106 tracked entries; zero regular files over 1 MiB; largest tracked regular file was 73,923 bytes; no Git LFS pointer or submodule entry detected |
-| Commit author/email review | Accepted for publication | 103 reachable commits use one email domain (`qq.com`); Polly explicitly accepted public disclosure of that historical domain on 2026-11-15 |
+| Commit author/email review | Accepted and published | 104 reachable commits use one email domain (`qq.com`); Polly explicitly accepted public disclosure of that historical domain on 2026-11-15 |
 | Dependency/license and advisory review | Pass | cargo-deny 0.20.2 advisories, licenses, sources, and bans pass under the reviewed duplicate-warning policy; patched SQLite is used and no package lacks a license expression |
 | Proprietary-component review | Pass for current graph/artifact set | Cargo source/license policy passes, non-OSI root-data packages were removed, and the exact release assembly contains no third-party executable artifact |
 | Malware/PUA behavior review | Pass for internal readiness; external classification pending | Source and behavior review found an authorized self-hosted terminal relay with explicit device grants, a fixed Herdr launcher, restricted Gateway account, no arbitrary shell/forwarding/scanning/exploitation/evasion, documented user-visible startup task/uninstall, and no project telemetry. Final no-hacking-tools classification remains SignPath Foundation's decision |
-| Public documentation and workflow review | Prepared, not public | Signing, privacy, security, uninstall, prerelease, and application documents exist on the readiness branch; anonymous access is unavailable while the repository remains Private |
-| Full regression evidence | Pass on final candidate | At `4b3defda9236`, Rust formatting/Clippy/workspace/doc tests, audit 17/17, release 20/20, Windows/POSIX/Gateway installers, deployment, SSH restriction, E2E, stable and SignPath workflow mutation, dependency-policy, and shell syntax gates all passed locally; private CI run `43644790464` passed Windows, macOS, Ubuntu, OpenSSH security, formatting, and lint jobs |
+| Public documentation and workflow review | Pass after Public conversion | README, LICENSE, SECURITY, code-signing policy, privacy policy, uninstall guide, application packet, workflows, and source are anonymously accessible from `main` |
+| Full regression evidence | Pass on public `main` | At `98781cd`, the final local readiness matrix passed; public CI run `43669176238` passed Windows, macOS, Ubuntu, OpenSSH security, formatting, lint, installer, audit, and dependency-policy jobs |
 
 ## Sanitized built-in scanner disposition
 
@@ -51,7 +53,7 @@ Tags observed: 0
 Submodule entries: 0
 Git LFS pointer candidates: 0
 Workflow secret references: 0
-Commit email domains: qq.com only (103 reachable commits)
+Commit email domains: qq.com only (104 reachable commits)
 ```
 
 Polly explicitly accepted publication of the historical `qq.com` author-email domain on 2026-11-15. This acceptance covers only existing Git author metadata and does not itself authorize a repository visibility change.
@@ -119,20 +121,21 @@ gitleaks git --redact --log-opts="--all" \
 
 Do not commit either raw report. Update this document with category counts and dispositions only after reviewing them privately.
 
-## Remaining visibility-gate actions
+## Completed visibility gate
 
-1. Review the sanitized final diff and commit list for candidate `4b3defda9236`.
-2. Obtain Polly's explicit External Gate A authorization before changing visibility.
-3. After Public conversion, verify anonymous access and security settings before considering the unsigned prerelease gate.
+External Gate A was explicitly authorized and completed on 2026-11-15:
 
-## Visibility gate
+1. reviewed readiness commits were merged to `main` and pushed;
+2. repository visibility changed from Private to Public;
+3. anonymous API/raw access was verified for README, LICENSE, SECURITY, code-signing policy, privacy policy, uninstall guide, application packet, workflows, and source;
+4. secret scanning, push protection, and Dependabot security updates were enabled;
+5. public CI run `43669176238` completed successfully.
 
-**Visibility change authorized:** No
+Polly explicitly chose not to enable `main` branch protection at this time. This is an accepted/deferred governance decision, not an enabled control; signing and prerelease workflows retain their own manual Environment and permission gates.
 
-Permitted final states:
+## Remaining external gates
 
-- `NOT RUN`
-- `BLOCKED`
-- `READY FOR VISIBILITY REVIEW`
+- **Gate B:** unsigned application prerelease — not authorized, not published.
+- **Gate C:** SignPath application — not authorized, not submitted.
 
-The current state is `READY FOR VISIBILITY REVIEW`, not authorization to publish. Do not run `gh repo edit --visibility public`, publish the unsigned prerelease, or submit the SignPath application without the corresponding explicit gate approval.
+Repository Public status does not authorize either remaining gate.

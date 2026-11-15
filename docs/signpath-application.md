@@ -3,10 +3,10 @@
 **Status:** Application packet prepared for review; external form not submitted
 
 ```text
-Repository visibility: PRIVATE
+Repository visibility: PUBLIC
 Application: NOT SUBMITTED
 Unsigned prerelease: NOT PUBLISHED
-Anonymous link access: NOT AVAILABLE
+Anonymous link access: VERIFIED 2026-11-15
 GitHub MFA: USER CONFIRMED 2026-11-15
 SignPath MFA: NOT APPLICABLE UNTIL ACCOUNT/INVITATION EXISTS
 ```
@@ -29,7 +29,7 @@ SignPath account or tenant details: [ENTER DIRECTLY IN SIGNPATH FORM — DO NOT 
 
 **Repository:** `https://github.com/Polly2014/FarPilot`
 
-**Current visibility:** Private; publication is blocked on the reviewed public-readiness gate
+**Current visibility:** Public; External Gate A completed and anonymous source/policy access verified
 
 **License:** [Apache License 2.0](../LICENSE)
 
@@ -60,12 +60,12 @@ The following SignPath Foundation conditions are not assumed from the Apache-2.0
 | SignPath OSS eligibility requirement | Current status | Evidence or remaining work |
 |---|---|---|
 | No malware or potentially unwanted applications | **PASS FOR INTERNAL READINESS** | Gitleaks reported only one reviewed synthetic plan marker; all built-in scanner findings were privately dispositioned as synthetic/intentional/false positive; production behavior review found an authorized relay with no credential testing, exploitation, scanning, evasion, stealth persistence, or project telemetry. SignPath retains final classification authority. |
-| OSI-approved project license | **IMPLEMENTED BUT NOT PUBLIC** | Apache-2.0 is present in the private repository; anonymous verification is not yet possible. |
+| OSI-approved project license | **PASS** | Apache-2.0 is anonymously accessible in the Public repository. |
 | Dependency/license audit and no proprietary bundled components | **PASS** | cargo-deny advisories, licenses, sources, and bans pass under the reviewed duplicate-warning policy; patched `libsqlite3-sys` 0.39.1 is used, wildcard path dependencies are versioned, non-OSI `webpki-roots` packages were removed, and the exact release assembly includes no third-party executable artifact. |
-| Active maintenance evidence | **IMPLEMENTED BUT NOT PUBLIC** | Current private evidence includes commit history, passing CI, current documentation, and recent release-readiness work; it is not anonymously accessible while the repository is Private. |
+| Active maintenance evidence | **PASS** | Public commit history, current documentation, and successful public CI run `43669176238` provide anonymously reviewable maintenance evidence. |
 | Already released in signable form | **NOT SATISFIED** | The fixed unsigned application prerelease `v0.1.0-unsigned.1` is not published. |
-| Documented functionality and download information | **IMPLEMENTED BUT NOT PUBLIC** | README, runbook, installer, security, and uninstall documentation exist on the readiness branch but are not yet public/merged. |
-| Uninstall instructions or automation | **IMPLEMENTED BUT NOT PUBLIC** | Transactional Windows uninstall and conservative cross-platform guidance exist on the readiness branch. |
+| Documented functionality and download information | **PASS** | README, runbook, installer, security, and uninstall documentation are available on Public `main`; stable signed downloads remain intentionally unavailable. |
+| Uninstall instructions or automation | **PASS** | Transactional Windows uninstall and conservative cross-platform guidance are publicly available. |
 | No hacking tools | **EXTERNAL REVIEW REQUIRED** | FarPilot is designed as an authorized self-hosted terminal relay with strict command, shell, forwarding, and Host authorization boundaries; final classification remains SignPath Foundation's decision. |
 | MFA and signing-role process | **PARTIAL PASS** | Polly confirmed GitHub MFA on 2026-11-15; SignPath MFA becomes applicable and mandatory only after account or invitation setup. |
 
@@ -160,13 +160,13 @@ SignPath has not approved FarPilot, the `release-signing` Environment is not con
 
 | Requirement | Current status |
 |---|---|
-| Repository Public | **NO — currently Private** |
-| Anonymous source and policy links accessible | **NOT AVAILABLE** |
-| Apache-2.0 license present | **YES in repository; not yet anonymously accessible** |
-| Code signing policy prepared | **YES on readiness branch; not yet public/merged** |
-| Privacy policy prepared | **YES on readiness branch; not yet public/merged** |
-| Security reporting policy prepared | **YES on readiness branch; not yet public/merged** |
-| Uninstall implementation and guide prepared | **YES on readiness branch; not yet public/merged** |
+| Repository Public | **YES — External Gate A completed 2026-11-15** |
+| Anonymous source and policy links accessible | **YES — API/raw access verified** |
+| Apache-2.0 license present | **YES — anonymously accessible** |
+| Code signing policy prepared | **YES — public on `main`** |
+| Privacy policy prepared | **YES — public on `main`** |
+| Security reporting policy prepared | **YES — public on `main`** |
+| Uninstall implementation and guide prepared | **YES — public on `main`** |
 | Public-readiness tree/history audit | **READY FOR VISIBILITY REVIEW — built-in findings privately dispositioned; Gitleaks complementary scan reviewed** |
 | Historical author-email disclosure | **ACCEPTED — Polly confirmed on 2026-11-15 that the `qq.com` author domain in existing commits may be public** |
 | Complementary Gitleaks audit | **COMPLETED — one synthetic plan marker reviewed as a false positive; no other finding** |
@@ -178,4 +178,4 @@ SignPath has not approved FarPilot, the `release-signing` Environment is not con
 | Terms rechecked | **Reviewed 2026-11-14: https://signpath.org/terms** |
 | Application submitted | **NOT SUBMITTED** |
 
-Do not submit the external application until every public-readiness item is complete and Polly has explicitly approved External Gates A, B, and C in the implementation plan.
+External Gate A is complete. Do not publish the unsigned prerelease or submit the external application until Polly explicitly approves External Gates B and C in the implementation plan.

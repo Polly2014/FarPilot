@@ -113,10 +113,10 @@ grep -Fq 'no downloader identity' "$privacy_policy"
 test -f "$signpath_application"
 grep -Fq '[SignPath application readiness](docs/signpath-application.md)' "$readme"
 for required in \
-  'Repository visibility: PRIVATE' \
+  'Repository visibility: PUBLIC' \
   'Application: NOT SUBMITTED' \
   'Unsigned prerelease: NOT PUBLISHED' \
-  'Anonymous link access: NOT AVAILABLE' \
+  'Anonymous link access: VERIFIED 2026-11-15' \
   'GitHub MFA: USER CONFIRMED 2026-11-15' \
   'SignPath MFA: NOT APPLICABLE UNTIL ACCOUNT/INVITATION EXISTS' \
   'v0.1.0-unsigned.1' \
@@ -133,10 +133,11 @@ for required in \
   '[ENTER DIRECTLY IN SIGNPATH FORM — DO NOT COMMIT]' \
   'documented current-user logon Scheduled Task' \
   'removable with `-Uninstall`' \
-  'No malware or potentially unwanted applications | **PENDING**' \
+  'No malware or potentially unwanted applications | **PASS FOR INTERNAL READINESS**' \
+  'OSI-approved project license | **PASS**' \
   'Dependency/license audit and no proprietary bundled components | **PASS**' \
   'Historical author-email disclosure | **ACCEPTED' \
-  'Active maintenance evidence | **IMPLEMENTED BUT NOT PUBLIC**' \
+  'Active maintenance evidence | **PASS**' \
   'Already released in signable form | **NOT SATISFIED**' \
   'No hacking tools | **EXTERNAL REVIEW REQUIRED**' \
   'Application readiness: **BLOCKED** while any eligibility row is `PENDING`, `NOT SATISFIED`, or `EXTERNAL REVIEW REQUIRED`' \
