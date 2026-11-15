@@ -5,7 +5,7 @@
 ```text
 Repository visibility: PUBLIC
 Application: NOT SUBMITTED
-Unsigned prerelease: NOT PUBLISHED
+Unsigned prerelease: PUBLISHED — v0.1.0-unsigned.1
 Anonymous link access: VERIFIED 2026-11-15
 GitHub MFA: USER CONFIRMED 2026-11-15
 SignPath MFA: NOT APPLICABLE UNTIL ACCOUNT/INVITATION EXISTS
@@ -63,13 +63,13 @@ The following SignPath Foundation conditions are not assumed from the Apache-2.0
 | OSI-approved project license | **PASS** | Apache-2.0 is anonymously accessible in the Public repository. |
 | Dependency/license audit and no proprietary bundled components | **PASS** | cargo-deny advisories, licenses, sources, and bans pass under the reviewed duplicate-warning policy; patched `libsqlite3-sys` 0.39.1 is used, wildcard path dependencies are versioned, non-OSI `webpki-roots` packages were removed, and the exact release assembly includes no third-party executable artifact. |
 | Active maintenance evidence | **PASS** | Public commit history, current documentation, and successful public CI run `43669176238` provide anonymously reviewable maintenance evidence. |
-| Already released in signable form | **NOT SATISFIED** | The fixed unsigned application prerelease `v0.1.0-unsigned.1` is not published. |
+| Already released in signable form | **PASS** | The reviewed unsigned application prerelease `v0.1.0-unsigned.1` is publicly available with exact artifact, digest, metadata, source-commit, and workflow provenance. |
 | Documented functionality and download information | **PASS** | README, runbook, installer, security, and uninstall documentation are available on Public `main`; stable signed downloads remain intentionally unavailable. |
 | Uninstall instructions or automation | **PASS** | Transactional Windows uninstall and conservative cross-platform guidance are publicly available. |
 | No hacking tools | **EXTERNAL REVIEW REQUIRED** | FarPilot is designed as an authorized self-hosted terminal relay with strict command, shell, forwarding, and Host authorization boundaries; final classification remains SignPath Foundation's decision. |
 | MFA and signing-role process | **PARTIAL PASS** | Polly confirmed GitHub MFA on 2026-11-15; SignPath MFA becomes applicable and mandatory only after account or invitation setup. |
 
-Application readiness: **BLOCKED** while any eligibility row is `PENDING`, `NOT SATISFIED`, or `EXTERNAL REVIEW REQUIRED`.
+Application readiness: **READY FOR EXTERNAL GATE C USER REVIEW**. All internally verifiable eligibility items pass; SignPath Foundation's no-hacking-tools classification is intentionally an external application outcome. Private contact fields and SignPath MFA are completed directly during the external process.
 
 ## Code-signing scope
 
@@ -127,12 +127,15 @@ The separate [Unsigned application workflow](../.github/workflows/signpath-appli
 
 ```text
 Tag: v0.1.0-unsigned.1
-Status: NOT PUBLISHED
+Status: PUBLISHED PRERELEASE
+Release: https://github.com/Polly2014/FarPilot/releases/tag/v0.1.0-unsigned.1
+Source commit: 35d58c6cf0df06a91942f6996ee543794f1cbdca
+Workflow run: 43674439627
 Purpose: SignPath Foundation application review only
 Stable/latest impact: None
 ```
 
-The prerelease is designed to contain exactly:
+The published prerelease contains exactly:
 
 ```text
 farpilot-windows-x86_64-unsigned.exe
@@ -140,7 +143,9 @@ SHA256SUMS
 build-metadata.json
 ```
 
-Its release body begins with `UNSIGNED SIGNPATH APPLICATION ARTIFACT` and warns users not to install it on production systems. It does not contain stable manifests or installer assets and cannot become the latest stable Release.
+Its release body begins with `UNSIGNED SIGNPATH APPLICATION ARTIFACT` and warns users not to install it on production systems. It does not contain stable manifests or installer assets and did not become the latest stable Release. Publication required manual approval through the protected `signpath-application` Environment; `Polly2014` was the configured reviewer, self-review prevention was disabled for the single-maintainer project, and the Environment deployment policy was restricted to `main`.
+
+The downloaded private verification copy contained exactly the three named assets. `SHA256SUMS` matched the unsigned executable, and `build-metadata.json` was verified for schema version 1, repository, source SHA, Cargo version `0.1.0`, artifact filename/hash, `unsigned=true`, and `purpose=signpath-application`.
 
 ## Manual approval and repository security
 
@@ -173,9 +178,9 @@ SignPath has not approved FarPilot, the `release-signing` Environment is not con
 | Dependency/license policy audit | **PASS — cargo-deny advisories/licenses/sources/bans pass; patched SQLite 3.54.1 is used, wildcard path dependencies are versioned, and non-OSI webpki root-data dependencies were removed** |
 | GitHub MFA enabled | **YES — USER CONFIRMED 2026-11-15** |
 | SignPath MFA enabled | **NOT APPLICABLE UNTIL ACCOUNT/INVITATION EXISTS** |
-| Unsigned prerelease `v0.1.0-unsigned.1` | **NOT PUBLISHED** |
-| Prerelease workflow run successful | **NOT DISPATCHED** |
+| Unsigned prerelease `v0.1.0-unsigned.1` | **PUBLISHED — [review artifact](https://github.com/Polly2014/FarPilot/releases/tag/v0.1.0-unsigned.1)** |
+| Prerelease workflow run successful | **YES — run `43674439627`, exact three assets and metadata verified** |
 | Terms rechecked | **Reviewed 2026-11-14: https://signpath.org/terms** |
 | Application submitted | **NOT SUBMITTED** |
 
-External Gate A is complete. Do not publish the unsigned prerelease or submit the external application until Polly explicitly approves External Gates B and C in the implementation plan.
+External Gates A and B are complete. Do not submit the external application until Polly explicitly approves External Gate C in the implementation plan.

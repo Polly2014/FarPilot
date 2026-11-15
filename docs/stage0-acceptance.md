@@ -99,7 +99,7 @@ This section is separate from Stage 0 product acceptance. It records only saniti
 | Complementary Gitleaks audit | Pass with reviewed false positive | Gitleaks 8.30.1 scanned all history with redaction and reported one synthetic private-key marker in the public SignPath implementation-plan prose; no key material or other finding was reported |
 | Dependency/license audit | Pass with reviewed duplicate policy | cargo-deny advisories/licenses/sources/bans pass; `libsqlite3-sys` resolves to patched 0.39.1, wildcard path dependencies are versioned, non-OSI `webpki-roots` packages were removed, and remaining transitive duplicate major versions are reviewed warnings |
 | Tracked-file review | Pass | 106 tracked entries, no regular file over 1 MiB, no submodule, and no Git LFS pointer candidate |
-| Author identity review | Accepted | One historical email domain is present across 100 commits; Polly accepted public disclosure of the `qq.com` domain on 2026-11-15 |
+| Author identity review | Accepted | One historical email domain is present across 106 commits; Polly accepted public disclosure of the `qq.com` domain on 2026-11-15 |
 | SignPath proprietary-component review | Pass for current graph | Cargo license/source policy passes and the exact release assembly contains no third-party executable artifact |
 | SignPath malware/PUA behavior review | Pass for internal readiness | Production source and behavior were reviewed as an authorized self-hosted relay with explicit grants, fixed Herdr launch, restricted SSH ingress, removable user-visible startup, and no scanning/exploitation/evasion or project telemetry; SignPath retains final no-hacking-tools classification authority |
 | Full local regression | Pass | Rust formatting, Clippy, workspace/doc tests, audit 17/17, release 20/20, installers, deployment, SSH restriction, E2E, workflow mutation, and shell syntax checks passed |
@@ -107,7 +107,7 @@ This section is separate from Stage 0 product acceptance. It records only saniti
 | Public repository security settings | Pass | Secret scanning, push protection, and Dependabot security updates are enabled |
 | Public `main` CI | Pass | Run `43669176238` completed successfully across Windows, macOS, Ubuntu, OpenSSH security, formatting, lint, installer, audit, and dependency-policy jobs |
 | `main` branch protection | Deferred by owner | Polly explicitly chose not to enable branch protection at this time; no protection is claimed |
-| Unsigned application prerelease | Not published | External Gate B has not been approved or dispatched |
+| Unsigned application prerelease | Pass | External Gate B was explicitly approved; protected workflow run `43674439627` published prerelease [`v0.1.0-unsigned.1`](https://github.com/Polly2014/FarPilot/releases/tag/v0.1.0-unsigned.1) from commit `35d58c6cf0df06a91942f6996ee543794f1cbdca` with the exact three review assets, verified digest, and validated metadata; stable/latest remained inactive |
 | SignPath application | Not submitted | External Gate C remains unauthorized; SignPath retains final no-hacking-tools classification authority |
 
-External Gate A is complete. Unsigned prerelease publication and SignPath application submission still require their separate explicit Gate B and Gate C approvals.
+External Gates A and B are complete. SignPath application submission still requires explicit External Gate C approval.

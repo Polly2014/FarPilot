@@ -115,7 +115,7 @@ grep -Fq '[SignPath application readiness](docs/signpath-application.md)' "$read
 for required in \
   'Repository visibility: PUBLIC' \
   'Application: NOT SUBMITTED' \
-  'Unsigned prerelease: NOT PUBLISHED' \
+  'Unsigned prerelease: PUBLISHED — v0.1.0-unsigned.1' \
   'Anonymous link access: VERIFIED 2026-11-15' \
   'GitHub MFA: USER CONFIRMED 2026-11-15' \
   'SignPath MFA: NOT APPLICABLE UNTIL ACCOUNT/INVITATION EXISTS' \
@@ -139,9 +139,12 @@ for required in \
   'Historical author-email disclosure | **ACCEPTED' \
   'Public-readiness tree/history audit | **PASS — External Gate A completed' \
   'Active maintenance evidence | **PASS**' \
-  'Already released in signable form | **NOT SATISFIED**' \
+  'Already released in signable form | **PASS**' \
   'No hacking tools | **EXTERNAL REVIEW REQUIRED**' \
-  'Application readiness: **BLOCKED** while any eligibility row is `PENDING`, `NOT SATISFIED`, or `EXTERNAL REVIEW REQUIRED`' \
+  'Application readiness: **READY FOR EXTERNAL GATE C USER REVIEW**' \
+  'Release: https://github.com/Polly2014/FarPilot/releases/tag/v0.1.0-unsigned.1' \
+  'Workflow run: 43674439627' \
+  'exact three assets and metadata verified' \
   'Public stable installer endpoints remain inactive until a signed stable Release exists and the reviewed Nginx configuration is deployed'; do
   grep -Fq "$required" "$signpath_application"
 done
