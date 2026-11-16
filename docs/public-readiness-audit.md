@@ -1,6 +1,6 @@
 # FarPilot Public Readiness Audit
 
-**Status:** PUBLIC — EXTERNAL GATES A AND B COMPLETE
+**Status:** PUBLIC — EXTERNAL GATES A, B, AND C COMPLETE; FOUNDATION APPLICATION NOT APPROVED AT THIS TIME
 
 **Repository visibility:** Public
 
@@ -149,8 +149,8 @@ External Gate B was explicitly authorized and completed on 2026-11-15:
 
 Release: https://github.com/Polly2014/FarPilot/releases/tag/v0.1.0-unsigned.1
 
-## Remaining external gate
+## Completed application gate and external outcome
 
-- **Gate C:** SignPath application — not authorized, not submitted.
+External Gate C was completed manually on 2026-11-15. On 2026-11-16, FarPilot learned that SignPath Foundation would not approve the application at this time because the project did not yet show enough external public-trust and visibility signals. SignPath identified community adoption, independent references or discussions, institutional backing, and sustained activity and engagement as the relevant external signals, emphasized that the decision was not a judgment on quality or potential, and invited a future reapplication.
 
-Public repository and unsigned-prerelease status do not authorize application submission.
+This outcome does not activate a certificate, signing tenant, or production signing workflow. A regular paid subscription was offered as an alternative, but no subscription or signing-route decision is recorded here. Private correspondence and contact information remain outside the repository.

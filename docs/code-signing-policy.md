@@ -1,6 +1,6 @@
 # FarPilot Code Signing Policy
 
-**Status:** SignPath readiness in progress. SignPath is not approved, the protected `release-signing` Environment is not configured, no signing certificate is active, and no FarPilot certificate profile exists.
+**Status:** SignPath Foundation did not approve the application submitted on 2026-11-15 at this time; the outcome was learned on 2026-11-16. The stated gap was insufficient external public-trust and visibility signals, not a technical-quality or security-readiness finding. Reapplication is possible after broader adoption. The protected `release-signing` Environment is not configured, no signing certificate is active, and no FarPilot certificate profile exists.
 
 **Required future attribution after SignPath approval:**
 

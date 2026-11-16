@@ -57,7 +57,7 @@ grep -Fq '* @Polly2014' "$codeowners"
 grep -Fq '/.github/workflows/ @Polly2014' "$codeowners"
 grep -Fq 'implemented on `main`' "$readme"
 grep -Fq 'short installer endpoints and first stable GitHub Release are not live' "$readme"
-grep -Fq 'SignPath readiness is in progress' "$readme"
+grep -Fq 'application submitted on 2026-11-15 was not approved at this time' "$readme"
 if test -f "$uninstall_doc"; then
   grep -Fq '[Uninstall](docs/uninstall.md)' "$readme"
   if grep -Fq 'Uninstall readiness: planned' "$readme"; then
@@ -102,7 +102,7 @@ if grep -Eqi 'rm[[:space:]]+(-[^[:space:]]+[[:space:]]+)*[^\n]*\.ssh/\*|curl[^\n
   echo 'uninstall guide contains a broad SSH glob or remote destructive pipeline' >&2
   exit 1
 fi
-grep -Fq 'SignPath is not approved' "$signing_policy"
+grep -Fq 'SignPath Foundation did not approve the application submitted on 2026-11-15 at this time' "$signing_policy"
 grep -Fq '`release-signing` Environment is not configured' "$signing_policy"
 grep -Fq 'no signing certificate is active' "$signing_policy"
 grep -Fq 'Required future attribution after SignPath approval:' "$signing_policy"
@@ -114,11 +114,15 @@ test -f "$signpath_application"
 grep -Fq '[SignPath application readiness](docs/signpath-application.md)' "$readme"
 for required in \
   'Repository visibility: PUBLIC' \
-  'Application: NOT SUBMITTED' \
+  'Application submitted: 2026-11-15' \
+  'External outcome: REJECTED — learned 2026-11-16' \
+  'Decision basis: INSUFFICIENT EXTERNAL PUBLIC-TRUST AND VISIBILITY SIGNALS' \
+  'Reapplication: ENCOURAGED AFTER BROADER RECOGNITION' \
+  'Paid subscription: AVAILABLE AS AN ALTERNATIVE' \
   'Unsigned prerelease: PUBLISHED — v0.1.0-unsigned.1' \
   'Anonymous link access: VERIFIED 2026-11-15' \
   'GitHub MFA: USER CONFIRMED 2026-11-15' \
-  'SignPath MFA: NOT APPLICABLE UNTIL ACCOUNT/INVITATION EXISTS' \
+  'SignPath MFA: NOT APPLICABLE — NO FOUNDATION ACCOUNT OR CERTIFICATE ISSUED' \
   'v0.1.0-unsigned.1' \
   'Author: Polly / Polly2014' \
   'Reviewer: Polly / Polly2014' \
@@ -140,8 +144,13 @@ for required in \
   'Public-readiness tree/history audit | **PASS — External Gate A completed' \
   'Active maintenance evidence | **PASS**' \
   'Already released in signable form | **PASS**' \
-  'No hacking tools | **EXTERNAL REVIEW REQUIRED**' \
-  'Application readiness: **READY FOR EXTERNAL GATE C USER REVIEW**' \
+  'No hacking tools | **EXTERNAL REVIEW NOT COMPLETED**' \
+  'Public trust and visibility signals | **NOT YET SUFFICIENT**' \
+  'Application status: **NOT APPROVED AT THIS TIME — REAPPLICATION INVITED**' \
+  'Application submitted | **YES — External Gate C completed manually 2026-11-15**' \
+  'Application outcome | **NOT APPROVED AT THIS TIME — learned 2026-11-16; reapplication invited after stronger public visibility**' \
+  'not being a judgment on project quality or potential' \
+  'regular paid SignPath subscription remains an optional faster path' \
   'Release: https://github.com/Polly2014/FarPilot/releases/tag/v0.1.0-unsigned.1' \
   'Workflow run: 43674439627' \
   'exact three assets and metadata verified' \

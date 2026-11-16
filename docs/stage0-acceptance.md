@@ -108,6 +108,6 @@ This section is separate from Stage 0 product acceptance. It records only saniti
 | Public `main` CI | Pass | Run `43669176238` completed successfully across Windows, macOS, Ubuntu, OpenSSH security, formatting, lint, installer, audit, and dependency-policy jobs |
 | `main` branch protection | Deferred by owner | Polly explicitly chose not to enable branch protection at this time; no protection is claimed |
 | Unsigned application prerelease | Pass | External Gate B was explicitly approved; protected workflow run `43674439627` published prerelease [`v0.1.0-unsigned.1`](https://github.com/Polly2014/FarPilot/releases/tag/v0.1.0-unsigned.1) from commit `35d58c6cf0df06a91942f6996ee543794f1cbdca` with the exact three review assets, verified digest, and validated metadata; stable/latest remained inactive |
-| SignPath application | Not submitted | External Gate C remains unauthorized; SignPath retains final no-hacking-tools classification authority |
+| SignPath application | Not approved at this time | External Gate C was completed manually on 2026-11-15. On 2026-11-16, FarPilot learned that the Foundation program required stronger external public-trust and visibility signals; reapplication was invited after broader recognition. No certificate or signing configuration was issued. |
 
-External Gates A and B are complete. SignPath application submission still requires explicit External Gate C approval.
+External Gates A, B, and C are complete. Foundation signing remains blocked; the project may build external adoption and reapply later, evaluate a regular paid subscription, or investigate another authorized public-trust signing route.
