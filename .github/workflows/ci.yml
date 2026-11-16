@@ -41,6 +41,8 @@ jobs:
         run: cargo test --doc --workspace
       - name: Test release tooling
         run: python3 -m unittest discover -s tests/release -p 'test_*.py' -v
+      - name: Test live-acceptance tooling
+        run: python3 -m unittest discover -s tests/acceptance -p 'test_*.py' -v
       - name: Verify release workflow structure
         run: |
           bash tests/release/workflow_assets.sh
