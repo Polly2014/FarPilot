@@ -78,16 +78,38 @@ fn terminate_active_attach(_device_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn database_url_from(value: Option<String>) -> anyhow::Result<String> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("FARPILOT_DATABASE_URL must be set for device commands"))
+}
+
 async fn open_store() -> anyhow::Result<GatewayStore> {
-    let database_url =
-        std::env::var("FARPILOT_DATABASE_URL").unwrap_or_else(|_| "sqlite://farpilot.db".into());
+    let database_url = database_url_from(std::env::var("FARPILOT_DATABASE_URL").ok())?;
     Ok(GatewayStore::connect(&database_url).await?)
+}
+
+#[cfg(unix)]
+fn validate_authorized_keys_owner(owner_uid: u32, effective_uid: u32) -> anyhow::Result<()> {
+    if owner_uid != effective_uid {
+        anyhow::bail!(
+            "authorized_keys owner UID {owner_uid} does not match effective UID {effective_uid}"
+        )
+    }
+    Ok(())
 }
 
 async fn rewrite_authorized_keys(store: &GatewayStore) -> anyhow::Result<()> {
     let path = std::env::var_os("FARPILOT_AUTHORIZED_KEYS")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/var/lib/farpilot/authorized_keys"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        let metadata = std::fs::symlink_metadata(&path)?;
+        validate_authorized_keys_owner(metadata.uid(), unsafe { libc::geteuid() })?;
+    }
     let keys = store
         .list_active_devices()
         .await?
@@ -104,6 +126,25 @@ async fn rewrite_authorized_keys(store: &GatewayStore) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn gateway_device_commands_require_an_explicit_database_url() {
+        let error = super::database_url_from(None).unwrap_err();
+        assert!(error.to_string().contains("FARPILOT_DATABASE_URL"));
+        assert_eq!(
+            super::database_url_from(Some("sqlite:///var/lib/farpilot/farpilot.db".into()))
+                .unwrap(),
+            "sqlite:///var/lib/farpilot/farpilot.db"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authorized_keys_rewrite_requires_the_file_owner() {
+        assert!(super::validate_authorized_keys_owner(1000, 1000).is_ok());
+        let error = super::validate_authorized_keys_owner(1000, 0).unwrap_err();
+        assert!(error.to_string().contains("authorized_keys owner"));
+    }
 
     #[tokio::test]
     async fn revocation_terminates_active_attach_before_reporting_key_sync_failure() {

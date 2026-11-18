@@ -417,6 +417,36 @@ function Invoke-ManagedFarPilotProcessStop {
     }
 }
 
+function Get-FarPilotHostTaskActionSpec {
+    param([string]$HostExecutable)
+    $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $escaped = $HostExecutable.Replace("'", "''")
+    $command = "& '$escaped' host start"
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    return [PSCustomObject]@{
+        Executable = $powerShell
+        Arguments = "-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand $encoded"
+        HostExecutable = $HostExecutable
+    }
+}
+
+function Resolve-FarPilotHostExecutableFromTaskAction {
+    param([string]$Executable, [string]$Arguments)
+    if ((Split-Path -Leaf $Executable) -ieq 'farpilot.exe' -and $Arguments -ceq 'host start') {
+        return $Executable
+    }
+    if ((Split-Path -Leaf $Executable) -ine 'powershell.exe' -or $Arguments -notmatch '(?:^|\s)-EncodedCommand\s+(\S+)(?:\s|$)') {
+        return $null
+    }
+    try {
+        $command = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($Matches[1]))
+    } catch {
+        return $null
+    }
+    if ($command -notmatch "^& '((?:''|[^'])+)' host start$") { return $null }
+    return $Matches[1].Replace("''", "'")
+}
+
 function Get-FarPilotStartupTaskState {
     if ($script:UseTestAdapters) {
         $missing = [PSCustomObject]@{
@@ -424,11 +454,19 @@ function Get-FarPilotStartupTaskState {
             UserId = $null; RunLevel = $null; Definition = $null
         }
         $state = Read-TestState -Name 'task' -DefaultValue $missing
+        $executable = [string]$state.Executable
+        $arguments = [string]$state.Arguments
+        $hostExecutable = if ($state.PSObject.Properties['HostExecutable']) {
+            [string]$state.HostExecutable
+        } else {
+            Resolve-FarPilotHostExecutableFromTaskAction -Executable $executable -Arguments $arguments
+        }
         return [PSCustomObject]@{
             Exists = [bool]$state.Exists
             Running = [bool]$state.Running
-            Executable = [string]$state.Executable
-            Arguments = [string]$state.Arguments
+            Executable = $executable
+            Arguments = $arguments
+            HostExecutable = $hostExecutable
             UserId = [string]$state.UserId
             RunLevel = [string]$state.RunLevel
             Definition = $state
@@ -446,6 +484,7 @@ function Get-FarPilotStartupTaskState {
         Running = ($task.State -eq 'Running')
         Executable = $executable
         Arguments = $arguments
+        HostExecutable = Resolve-FarPilotHostExecutableFromTaskAction -Executable $executable -Arguments $arguments
         UserId = [string]$task.Principal.UserId
         RunLevel = [string]$task.Principal.RunLevel
         Definition = $task
@@ -467,12 +506,14 @@ function Invoke-FarPilotStartupTaskStop {
 function Invoke-FarPilotStartupTaskUpdate {
     param([string]$Executable, [object]$PreviousState, [bool]$CreateTask)
     if (-not $CreateTask -and -not $PreviousState.Exists) { return }
+    $actionSpec = Get-FarPilotHostTaskActionSpec -HostExecutable $Executable
     if ($script:UseTestAdapters) {
         $updated = [PSCustomObject]@{
             Exists = $true
             Running = $false
-            Executable = $Executable
-            Arguments = 'host start'
+            Executable = $actionSpec.Executable
+            Arguments = $actionSpec.Arguments
+            HostExecutable = $actionSpec.HostExecutable
             UserId = $env:USERNAME
             RunLevel = 'Limited'
         }
@@ -485,7 +526,7 @@ function Invoke-FarPilotStartupTaskUpdate {
         }
         return
     }
-    $action = New-ScheduledTaskAction -Execute $Executable -Argument 'host start'
+    $action = New-ScheduledTaskAction -Execute $actionSpec.Executable -Argument $actionSpec.Arguments
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
     $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
@@ -712,12 +753,11 @@ function Resolve-FarPilotUninstallBinDir {
     }
     if ($TaskState.Exists) {
         if (-not [string]::IsNullOrWhiteSpace($LegacyHint)) { throw 'InstallDir is forbidden when a managed FarPilot task identifies the visible bin' }
-        $executable = [string]$TaskState.Executable
-        if ([string]::IsNullOrWhiteSpace($executable) -or (Split-Path -Leaf $executable) -ine 'farpilot.exe' -or
-            [string]$TaskState.Arguments -cne 'host start') {
+        $hostExecutable = [string]$TaskState.HostExecutable
+        if ([string]::IsNullOrWhiteSpace($hostExecutable) -or (Split-Path -Leaf $hostExecutable) -ine 'farpilot.exe') {
             throw 'Existing FarPilot task does not contain a valid managed executable path'
         }
-        $candidate = Get-CanonicalPath (Split-Path -Parent $executable)
+        $candidate = Get-CanonicalPath (Split-Path -Parent $hostExecutable)
         $state = Get-JunctionState -Path $candidate -ReleasesDir $ReleasesDir -AllowLegacyBinary $false
         if ($state.Kind -ne 'Junction') { throw 'Existing FarPilot task executable is not under a managed visible-bin junction' }
         return $candidate
