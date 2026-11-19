@@ -124,9 +124,10 @@ Re-run the existing `/pair`, `/v1`, `/health`, and `/ws/host` checks after reloa
 3. Confirm the managed layout exists under `%LOCALAPPDATA%\FarPilot\releases` and that `%LOCALAPPDATA%\FarPilot\current` and `bin` point to the selected complete release.
 4. Run `farpilot host setup --gateway https://<gateway-domain> --enrollment-code <code> --name "Company DevBox"`.
 5. Confirm the printed pairing URL belongs to the expected Gateway domain.
-6. Confirm the current-user `FarPilot Host` task uses limited run level and points to `bin\farpilot.exe host start`.
-7. Verify `Get-NetTCPConnection -State Listen` shows no FarPilot listener.
-8. Verify outbound connection targets only the configured Gateway on 443.
+6. Confirm the current-user `FarPilot Host` task uses limited run level and points to `bin\farpilot.exe host start`. This direct console task is installed for recovery/logon convenience but is not yet accepted as a windowless unattended mode.
+7. For the verified Stage 0.5 operating mode, run `farpilot host start` from a normal non-administrator PowerShell and keep that process running and minimized.
+8. Verify `Get-NetTCPConnection -State Listen` shows no FarPilot listener.
+9. Verify outbound connection targets only the configured Gateway on 443.
 
 ### Windows rollback and PATH troubleshooting
 
@@ -215,13 +216,16 @@ The 2026-11-14 Chromium/Playwright acceptance observed:
     InternalError, and reduced-motion; no external/subresource requests occurred
 [x] Console observers covered that same complete state set with zero errors
 [x] Ready, long-value, Success, and Expired screenshots passed manual CRT review
-[ ] Natural five-minute countdown reached 00:00 and locked the live form
-[ ] Keyboard tab order and semantic labels were manually traversed
-[ ] iPhone Safari software keyboard left the submit control reachable
-[ ] Live deployed QR/Moshi pairing completed through the public Gateway
+[x] Natural five-minute countdown reached 00:00 and remained invalid after refresh
+[x] Keyboard tab order and semantic labels were manually traversed
+[x] iPhone Safari software keyboard left the submit control reachable
+[x] Live deployed QR/Moshi pairing completed through the public Gateway
+[x] Live Moshi revocation closed the session and blocked the old key
+[x] A new Moshi key re-paired and entered/re-entered the same Herdr workspace
+[x] Existing Mac fallback, state invariants, and sensitive-log scans remained valid
 ```
 
-Keep every unchecked row Pending. In particular, Chromium viewport simulation does not establish iPhone Safari software-keyboard behavior. Real-device public pairing acceptance remains separate and requires an approved Gateway deployment.
+The checked live rows were completed during the separately authorized 2026-11-18–19 Window A. Keep unattended Host startup, Window B rollback, stable/latest, and public installer-channel claims Pending until separately accepted.
 
 ## Revocation drill
 

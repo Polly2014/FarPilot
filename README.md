@@ -8,6 +8,8 @@ FarPilot securely connects standard SSH terminals to persistent Herdr sessions o
 
 The private Stage 0 deployment has passed its nine acceptance criteria on Windows, macOS, and iPhone. Protocol, Gateway, Host, pairing, revocation, restricted SSH attachment, deployment assets, and regression tests are implemented.
 
+Stage 0.5 Window A also passed live CRT, desktop keyboard, natural token expiry, iPhone Safari, Moshi pairing/revocation/re-pair, existing Mac fallback, state-integrity, and log-redaction checks. The currently verified Windows operating mode is `farpilot host start` in a normal non-administrator PowerShell kept running and minimized. Unattended/background Host startup is not yet accepted, and Window B installer/rollback testing is deferred.
+
 One-command installers and the verified release workflow are implemented on `main`, but the short installer endpoints and first stable GitHub Release are not live until a signed Release is published and the reviewed Nginx routes are deployed.
 
 ## Architecture

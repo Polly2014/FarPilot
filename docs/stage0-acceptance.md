@@ -1,6 +1,6 @@
 # FarPilot Stage 0 Acceptance
 
-**Status:** Stage 0 acceptance complete; commercial Windows signing remains a pre-release requirement
+**Status:** Stage 0 complete; Stage 0.5 Window A accepted with a foreground Windows Host; unattended Host startup and Window B remain Pending; Windows signing remains a pre-release requirement
 
 Record only sanitized evidence. Do not include public IPs, private hostnames, tokens, keys, terminal content, or company data.
 
@@ -18,8 +18,8 @@ Record only sanitized evidence. Do not include public IPs, private hostnames, to
 
 ## Component versions
 
-- Gateway FarPilot: `0.1.0`, deployed from `098c55f`
-- Windows FarPilot: `0.1.0`, built from `220936c`
+- Gateway FarPilot: `0.1.0`, live Window A candidate built from `fd71c31`
+- Windows FarPilot: `0.1.0`, restored from successful CI run `43676588975` at `fd71c31`
 - Gateway OS: Ubuntu 20.04 x86_64
 - Windows version: Windows 11 x86_64
 - Herdr version: 0.9.5
@@ -89,7 +89,23 @@ The approved preview fixture is `Example DevBox`, `gateway.example.com:22`, a sy
 | Live Moshi revocation and re-pair | Pass | The active Moshi session terminated, the revoked key failed reconnect, a new key paired successfully, and first/repeat Herdr attachment passed |
 | Window A state and log invariants | Pass with repaired operator incident | Existing Mac access, immutable configuration/SSH/TLS hashes, database invariants, and sanitized log scans passed. An operator command initially ran outside the documented `sudo -u farpilot` context and changed `authorized_keys` ownership; production state was restored, and new fail-closed database/owner tests prevent the same misuse |
 
-Do not promote the remaining Pending rows from source inspection, Chromium viewport checks, or automated static contracts alone. Real public-device acceptance requires an approved deployment and must still use sanitized evidence.
+The live browser and real-device rows above are supported by the separately authorized Window A evidence. Do not promote future Pending rows from source inspection or synthetic automation alone.
+
+## Stage 0.5 disposition
+
+Window A is accepted for the foreground Windows operating mode:
+
+```text
+normal non-administrator PowerShell
+farpilot host start
+keep the PowerShell process running and minimized
+```
+
+The Window A functional matrix passed live Gateway deployment, Mac fallback, natural token expiry, keyboard/semantic traversal, iPhone Safari keyboard reachability, Moshi pairing, revocation, failed old-key reconnect, new-key re-pair, Herdr first/repeat attachment, state invariants, and sanitized log review.
+
+A PowerShell-wrapped hidden Scheduled Task experiment showed `Running` with a managed process and an established client-side TCP connection but did not complete Gateway Host authentication. That experiment was reverted in `28bfac1`; it is not an accepted operating mode. A later installer hardening retains only the verified `releases`/`bin`/`current` managed-process cleanup and direct task contract.
+
+Window B controlled installer and live rollback testing is deferred. Stable/latest, public bootstrap routes, signed Windows distribution, and unattended Windows Host operation remain Pending.
 
 ## SignPath public-readiness acceptance
 
