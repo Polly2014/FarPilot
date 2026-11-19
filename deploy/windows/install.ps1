@@ -398,13 +398,25 @@ function Test-JunctionReleaseReference {
 }
 
 function Invoke-ManagedFarPilotProcessStop {
-    param([object[]]$ProcessState, [string]$ReleasesDir)
+    param(
+        [object[]]$ProcessState,
+        [string]$ReleasesDir,
+        [string[]]$ManagedAliases = @()
+    )
     Invoke-TestFailure -Point 'DuringManagedProcessStop'
     foreach ($process in @($ProcessState)) {
         $path = [string]$process.ExecutablePath
         $name = if ($process.PSObject.Properties['Name']) { [string]$process.Name } else { 'farpilot.exe' }
-        if ($name -ieq 'farpilot.exe' -and -not [string]::IsNullOrWhiteSpace($path) -and
-            (Test-PathInside -Path $path -Parent $ReleasesDir)) {
+        $managed = -not [string]::IsNullOrWhiteSpace($path) -and (Test-PathInside -Path $path -Parent $ReleasesDir)
+        if (-not $managed -and -not [string]::IsNullOrWhiteSpace($path)) {
+            foreach ($alias in $ManagedAliases) {
+                if (Test-PathInside -Path $path -Parent $alias) {
+                    $managed = $true
+                    break
+                }
+            }
+        }
+        if ($name -ieq 'farpilot.exe' -and $managed) {
             if ($script:UseTestAdapters) {
                 $process.Stopped = $true
             } else {
@@ -1050,7 +1062,7 @@ function Invoke-FarPilotUninstall {
         try {
             $taskMutated = [bool]$taskState.Exists
             Invoke-FarPilotStartupTaskStop -State $taskState
-            Invoke-ManagedFarPilotProcessStop -ProcessState $processState -ReleasesDir $ReleasesDir
+            Invoke-ManagedFarPilotProcessStop -ProcessState $processState -ReleasesDir $ReleasesDir -ManagedAliases @($BinDir, $CurrentDir)
             $quarantined = @(Invoke-FarPilotUninstallQuarantine -Plan $deletionPlan)
             Invoke-FarPilotStartupTaskRemoval -State $taskState
             $pathMutated = $true
@@ -1280,7 +1292,7 @@ try {
     try {
         $taskStopAttempted = $true
         Invoke-FarPilotStartupTaskStop $taskState
-        Invoke-ManagedFarPilotProcessStop -ProcessState $processState -ReleasesDir $ReleasesDir
+        Invoke-ManagedFarPilotProcessStop -ProcessState $processState -ReleasesDir $ReleasesDir -ManagedAliases @($BinDir, $CurrentDir)
         if (-not $releaseExists) {
             Move-Item -LiteralPath $stagingDir -Destination $ReleaseDir
             $releaseCreated = $true

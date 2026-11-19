@@ -15,6 +15,7 @@ class WindowsHiddenTaskContract(unittest.TestCase):
             "-WindowStyle Hidden",
             "-EncodedCommand",
             "HostExecutable",
+            "ManagedAliases",
         ]:
             self.assertIn(required, installer)
         self.assertIn("$TaskState.HostExecutable", installer)
@@ -25,6 +26,8 @@ class WindowsHiddenTaskContract(unittest.TestCase):
             "startup task wrapper is not PowerShell",
             "startup task is not hidden",
             "startup task host executable is wrong",
+            "managed bin alias process was not stopped",
+            "managed current alias process was not stopped",
         ]:
             self.assertIn(required, test)
 
