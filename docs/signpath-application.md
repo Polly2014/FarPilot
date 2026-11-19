@@ -1,15 +1,21 @@
 # FarPilot SignPath Foundation Application Readiness
 
-**Status:** Application packet prepared for review; external form not submitted
+**Status:** Foundation application not approved at this time; reapplication invited after stronger public adoption and visibility
 
 ```text
 Repository visibility: PUBLIC
-Application: NOT SUBMITTED
+Application submitted: 2026-11-15
+External outcome: REJECTED — learned 2026-11-16
+Decision basis: INSUFFICIENT EXTERNAL PUBLIC-TRUST AND VISIBILITY SIGNALS
+Reapplication: ENCOURAGED AFTER BROADER RECOGNITION
+Paid subscription: AVAILABLE AS AN ALTERNATIVE
 Unsigned prerelease: PUBLISHED — v0.1.0-unsigned.1
 Anonymous link access: VERIFIED 2026-11-15
 GitHub MFA: USER CONFIRMED 2026-11-15
-SignPath MFA: NOT APPLICABLE UNTIL ACCOUNT/INVITATION EXISTS
+SignPath MFA: NOT APPLICABLE — NO FOUNDATION ACCOUNT OR CERTIFICATE ISSUED
 ```
+
+Polly manually submitted the external form on 2026-11-15 and confirmed the SignPath `Form submitted` page. On 2026-11-16, Polly shared that SignPath Foundation was unable to approve the application at this time. The stated reason was that FarPilot did not yet show enough external public-trust and visibility signals, including community adoption, independent references or discussion, institutional backing, and sustained engagement. SignPath explicitly framed this as not being a judgment on project quality or potential and invited a future reapplication after broader recognition. No private correspondence, contact data, account identifier, tenant, certificate, or signing configuration is recorded here.
 
 This document contains public project answers and a pre-submission checklist. It does not contain private contact information, legal identity documents, addresses, telephone numbers, SignPath credentials, or API tokens.
 
@@ -66,10 +72,11 @@ The following SignPath Foundation conditions are not assumed from the Apache-2.0
 | Already released in signable form | **PASS** | The reviewed unsigned application prerelease `v0.1.0-unsigned.1` is publicly available with exact artifact, digest, metadata, source-commit, and workflow provenance. |
 | Documented functionality and download information | **PASS** | README, runbook, installer, security, and uninstall documentation are available on Public `main`; stable signed downloads remain intentionally unavailable. |
 | Uninstall instructions or automation | **PASS** | Transactional Windows uninstall and conservative cross-platform guidance are publicly available. |
-| No hacking tools | **EXTERNAL REVIEW REQUIRED** | FarPilot is designed as an authorized self-hosted terminal relay with strict command, shell, forwarding, and Host authorization boundaries; final classification remains SignPath Foundation's decision. |
-| MFA and signing-role process | **PARTIAL PASS** | Polly confirmed GitHub MFA on 2026-11-15; SignPath MFA becomes applicable and mandatory only after account or invitation setup. |
+| No hacking tools | **EXTERNAL REVIEW NOT COMPLETED** | FarPilot is designed as an authorized self-hosted terminal relay with strict command, shell, forwarding, and Host authorization boundaries. The Foundation decision cited insufficient public-trust and visibility signals rather than a malware, hacking-tool, technical-quality, or security-readiness classification. |
+| Public trust and visibility signals | **NOT YET SUFFICIENT** | SignPath cited community adoption (`stars`, forks, contributors), independent articles/references/discussions, institutional backing, and sustained activity and engagement as the missing external signals. |
+| MFA and signing-role process | **PARTIAL PASS** | Polly confirmed GitHub MFA on 2026-11-15. No Foundation account, certificate, or signing tenant was issued, so SignPath MFA was not activated. |
 
-Application readiness: **READY FOR EXTERNAL GATE C USER REVIEW**. All internally verifiable eligibility items pass; SignPath Foundation's no-hacking-tools classification is intentionally an external application outcome. Private contact fields and SignPath MFA are completed directly during the external process.
+Application status: **NOT APPROVED AT THIS TIME — REAPPLICATION INVITED**. External Gate C was completed manually on 2026-11-15, and the external outcome was learned on 2026-11-16. All internally verifiable readiness items remain useful, but they do not substitute for the external adoption and recognition required by the Foundation program. SignPath explicitly stated that the decision was not a judgment on FarPilot's quality or potential. A regular paid SignPath subscription remains an optional faster path; no subscription decision has been made.
 
 ## Code-signing scope
 
@@ -159,7 +166,7 @@ Before any production signing is enabled, FarPilot requires:
 - verification of Authenticode status, certificate subject, Code Signing EKU, RFC3161 timestamp, binary version, and final SHA-256;
 - generation of the stable manifest only after signed-file verification.
 
-SignPath has not approved FarPilot, the `release-signing` Environment is not configured, and no signing certificate is active.
+SignPath Foundation did not approve FarPilot at this time because the project did not yet show sufficient external public-trust and visibility signals. Reapplication is possible after broader recognition, and a regular paid subscription is an alternative. The `release-signing` Environment is not configured, and no signing certificate is active.
 
 ## Pre-submission checklist
 
@@ -181,6 +188,7 @@ SignPath has not approved FarPilot, the `release-signing` Environment is not con
 | Unsigned prerelease `v0.1.0-unsigned.1` | **PUBLISHED — [review artifact](https://github.com/Polly2014/FarPilot/releases/tag/v0.1.0-unsigned.1)** |
 | Prerelease workflow run successful | **YES — run `43674439627`, exact three assets and metadata verified** |
 | Terms rechecked | **Reviewed 2026-11-14: https://signpath.org/terms** |
-| Application submitted | **NOT SUBMITTED** |
+| Application submitted | **YES — External Gate C completed manually 2026-11-15** |
+| Application outcome | **NOT APPROVED AT THIS TIME — learned 2026-11-16; reapplication invited after stronger public visibility** |
 
-External Gates A and B are complete. Do not submit the external application until Polly explicitly approves External Gate C in the implementation plan.
+External Gates A, B, and C are complete, and the recorded external status is `REJECTED`. Do not commit private correspondence, identity documents, account details, or credentials. Production Foundation signing integration remains blocked. The next decision is whether to build external adoption and reapply later, evaluate a regular paid SignPath subscription, or investigate another authorized public-trust signing route; none is selected by this record.

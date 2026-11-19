@@ -123,7 +123,7 @@ Read [Installer security](docs/installer-security.md) for the trust boundary, ro
 
 ## Security and project policies
 
-SignPath readiness is in progress. FarPilot is preparing for public open-source review and SignPath Foundation code signing. The repository has not yet been accepted by SignPath, no certificate is active, and no signed stable Windows release has been published.
+The SignPath Foundation application submitted on 2026-11-15 was not approved at this time because FarPilot does not yet show enough external public-trust and visibility signals. SignPath invited a future reapplication after broader community adoption and recognition. No certificate is active, and no signed stable Windows release has been published.
 
 - [Code signing policy](docs/code-signing-policy.md)
 - [Privacy policy](docs/privacy-policy.md)

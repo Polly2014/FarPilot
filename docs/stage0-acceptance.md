@@ -51,7 +51,7 @@ Do not mark the pending rows Pass from a dry-run artifact alone. Before public a
 
 ## CRT pairing page acceptance
 
-This section records the server-rendered CRT pairing-page work separately from the original nine Stage 0 criteria and installer acceptance. No live pairing token, real Host metadata, SSH fingerprint, or public key was generated or recorded for this local verification.
+This section records the server-rendered CRT pairing-page work separately from the original nine Stage 0 criteria and installer acceptance. The 2026-11-14 synthetic browser run used no live pairing material. A separately authorized live Window A on 2026-11-18–19 exercised real tokens and devices, but only sanitized outcomes are recorded; no real URL, token, Host metadata, fingerprint, public-key body, device ID, terminal content, or raw log is committed.
 
 ### Automated evidence
 
@@ -59,10 +59,10 @@ This section records the server-rendered CRT pairing-page work separately from t
 |---|---|---|
 | Pairing-page renderer and state contracts | Pass | Fourteen renderer tests cover token inventory, escaping, per-response CSP nonce, generic error states, CRT/accessibility markers, countdown/state-machine contracts, visible network errors, safe success rendering, and prototype-safe API error mapping |
 | Pairing browser route integration | Pass | Eight HTTP tests cover valid themed pages, hostile metadata escaping, nonce/security headers, generic invalid/expired/consumed pages, rate limiting, internal/fallback pages, and unchanged JSON Claim behavior |
-| Full Rust workspace regression | Pass | Eighty-three workspace tests pass; Rust formatting, Clippy with warnings denied, and documentation tests pass |
+| Full Rust workspace regression | Pass | Eighty-seven workspace tests pass after the Stage 0.5 safety regressions; Rust formatting, Clippy with warnings denied, and documentation tests pass |
 | Existing installer/security regressions | Pass | Release tooling, POSIX and Gateway installers, deployment assets, SSH restrictions, E2E harness, release workflow structure, and shell syntax checks pass |
 | External-resource static contract | Pass | Compiled template tests reject external scripts, stylesheets, fonts, images, iframes, prefetches, absolute HTTP(S) resources, and dangerous DOM sinks |
-| Live Gateway deployment | Pending | CRT page has not been deployed to the public Gateway |
+| Live Gateway deployment | Pass | The reviewed static Linux candidate from successful public CI run `43676588975` was deployed with an atomic same-filesystem replacement and a private rollback copy; service, liveness, readiness, Host reconnect, and existing Mac attach passed without rollback |
 
 ### Sanitized browser visual checklist
 
@@ -76,16 +76,18 @@ The approved preview fixture is `Example DevBox`, `gateway.example.com:22`, a sy
 | Full synthetic fingerprint | Pass | Full synthetic value was present, wrapped without truncation, and its element had no horizontal overflow |
 | Focus and touch target | Pass | Empty submission showed visible `INVALID DEVICE NAME`, focused the name field, and the submit control measured at least 44 px high |
 | Countdown display | Pass | Ready state populated the `AUTH WINDOW` countdown from the synthetic expiry |
-| Natural `00:00` transition | Pending | The rendered Expired state was inspected, but a real-time five-minute countdown-to-zero transition was not observed end to end |
+| Natural `00:00` transition | Pass | A real five-minute token naturally reached `00:00`; the page transitioned to `SESSION EXPIRED`, and a browser refresh kept the token invalid without restoring the form |
 | Interactive states | Pass | Ready, synthetic pending `AUTHORIZING...`, field error, visible Network error, intercepted synthetic Success, Expired, Invalid, RateLimited, and InternalError headings rendered coherently |
 | Success data minimization | Pass | Synthetic `201` displayed `PAIRING COMPLETE`, `SESSION SEALED`, and allowlisted connection details; `device_id` and `host_id` were not shown |
 | Reduced motion | Pass | Reduced-motion context disabled the default animation duration and constrained iteration to one |
 | Browser network log | Pass | Request observers covered Ready, long-value 320 px, desktop, field error, pending Submitting, Success, Network Error, Expired, Invalid, RateLimited, InternalError, and reduced-motion states; no external or subresource requests occurred, and only the synthetic same-origin Claim request appeared during Success submission |
 | Browser console | Pass | Console observers covered Ready, long-value 320 px, desktop, field error, pending Submitting, Success, Network Error, Expired, Invalid, RateLimited, InternalError, and reduced-motion states; every observed state produced zero console errors |
 | CRT readability and layout | Pass | Ready, long-value, Success, and Expired screenshots were manually inspected and accepted for CRT style, readability, and layout |
-| Keyboard tab order and semantic labels | Pending | Automated DOM contracts pass, but this was not manually traversed in the browser acceptance run |
-| iPhone Safari software keyboard | Pending | Chromium viewport testing does not prove that the iPhone Safari software keyboard leaves the submit control reachable |
-| Live deployed QR/Moshi flow | Pending | Requires an approved Gateway deployment and a separately authorized real-device pairing session |
+| Keyboard tab order and semantic labels | Pass | A live desktop browser traversed device name, SSH key, and authorization button in both directions; empty submission displayed `INVALID DEVICE NAME` and returned focus to the device-name field |
+| iPhone Safari software keyboard | Pass | Real iPhone Safari kept the authorization control reachable with both fields focused, the software keyboard visible, and portrait/landscape rotation |
+| Live deployed QR/Moshi flow | Pass with remediation note | A new Moshi Ed25519 key paired through live Safari, entered Herdr, detached, and reattached to the same workspace. The Host process required one manual restart during the multi-connection pairing sequence; a deterministic loopback integration regression now covers persistent Host reconnection, while Windows startup lifecycle remediation remains pending real-machine verification |
+| Live Moshi revocation and re-pair | Pass | The active Moshi session terminated, the revoked key failed reconnect, a new key paired successfully, and first/repeat Herdr attachment passed |
+| Window A state and log invariants | Pass with repaired operator incident | Existing Mac access, immutable configuration/SSH/TLS hashes, database invariants, and sanitized log scans passed. An operator command initially ran outside the documented `sudo -u farpilot` context and changed `authorized_keys` ownership; production state was restored, and new fail-closed database/owner tests prevent the same misuse |
 
 Do not promote the remaining Pending rows from source inspection, Chromium viewport checks, or automated static contracts alone. Real public-device acceptance requires an approved deployment and must still use sanitized evidence.
 
@@ -108,6 +110,6 @@ This section is separate from Stage 0 product acceptance. It records only saniti
 | Public `main` CI | Pass | Run `43669176238` completed successfully across Windows, macOS, Ubuntu, OpenSSH security, formatting, lint, installer, audit, and dependency-policy jobs |
 | `main` branch protection | Deferred by owner | Polly explicitly chose not to enable branch protection at this time; no protection is claimed |
 | Unsigned application prerelease | Pass | External Gate B was explicitly approved; protected workflow run `43674439627` published prerelease [`v0.1.0-unsigned.1`](https://github.com/Polly2014/FarPilot/releases/tag/v0.1.0-unsigned.1) from commit `35d58c6cf0df06a91942f6996ee543794f1cbdca` with the exact three review assets, verified digest, and validated metadata; stable/latest remained inactive |
-| SignPath application | Not submitted | External Gate C remains unauthorized; SignPath retains final no-hacking-tools classification authority |
+| SignPath application | Not approved at this time | External Gate C was completed manually on 2026-11-15. On 2026-11-16, FarPilot learned that the Foundation program required stronger external public-trust and visibility signals; reapplication was invited after broader recognition. No certificate or signing configuration was issued. |
 
-External Gates A and B are complete. SignPath application submission still requires explicit External Gate C approval.
+External Gates A, B, and C are complete. Foundation signing remains blocked; the project may build external adoption and reapply later, evaluate a regular paid subscription, or investigate another authorized public-trust signing route.

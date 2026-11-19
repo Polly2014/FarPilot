@@ -446,7 +446,9 @@ try {
     Write-TestStateFile -LocalAppData $adapter -Name 'processes' -Value @(
         [PSCustomObject]@{ Id = 101; Name = 'farpilot.exe'; ExecutablePath = "$adapterRoot\releases\0.1.0-x86_64-pc-windows-msvc\farpilot.exe"; Stopped = $false },
         [PSCustomObject]@{ Id = 102; Name = 'farpilot.exe'; ExecutablePath = 'C:\External\farpilot.exe'; Stopped = $false },
-        [PSCustomObject]@{ Id = 103; Name = 'other.exe'; ExecutablePath = "$adapterRoot\releases\0.1.0-x86_64-pc-windows-msvc\other.exe"; Stopped = $false }
+        [PSCustomObject]@{ Id = 103; Name = 'other.exe'; ExecutablePath = "$adapterRoot\releases\0.1.0-x86_64-pc-windows-msvc\other.exe"; Stopped = $false },
+        [PSCustomObject]@{ Id = 104; Name = 'farpilot.exe'; ExecutablePath = "$adapterRoot\bin\farpilot.exe"; Stopped = $false },
+        [PSCustomObject]@{ Id = 105; Name = 'farpilot.exe'; ExecutablePath = "$adapterRoot\current\farpilot.exe"; Stopped = $false }
     )
     Install-Fixture -Scenario $adapter -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
     $pathState = Get-TestState -LocalAppData $adapter -Name 'path'
@@ -462,6 +464,8 @@ try {
     Assert-True ([bool]$processState[0].Stopped) 'managed FarPilot process was not stopped'
     Assert-True (-not [bool]$processState[1].Stopped) 'external same-name process was stopped'
     Assert-True (-not [bool]$processState[2].Stopped) 'non-FarPilot process was stopped'
+    Assert-True ([bool]$processState[3].Stopped) 'managed bin alias process was not stopped'
+    Assert-True ([bool]$processState[4].Stopped) 'managed current alias process was not stopped'
     $taskState = Get-TestState -LocalAppData $adapter -Name 'task'
     Assert-True ([bool]$taskState.Exists) 'default fresh install did not create startup task'
     Assert-Equal -Expected (Join-Path $adapterRoot 'bin\farpilot.exe') -Actual ([string]$taskState.Executable) -Message 'startup task executable is wrong'

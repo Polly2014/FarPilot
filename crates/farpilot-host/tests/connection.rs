@@ -363,6 +363,97 @@ async fn gateway_disconnect_closes_all_active_host_pty_sessions() {
     server.abort();
 }
 
+#[tokio::test]
+async fn persistent_host_reconnects_after_pairing_connection_replaces_it() {
+    let store = GatewayStore::connect("sqlite::memory:").await.unwrap();
+    let identity = HostIdentity::generate();
+    let secret = identity.to_secret_bytes();
+    let host = store
+        .enroll_host("Company DevBox", &identity.public_key().to_bytes())
+        .await
+        .unwrap();
+    let state = HostWsState::new(store).with_pairing_base_url("https://gateway.example.com");
+    let broker = state.broker();
+    let app = build_host_ws_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+    });
+    let url = format!("ws://{address}/ws/host");
+    let connected = Arc::new(tokio::sync::Notify::new());
+    let connected_task = connected.clone();
+    let persistent_url = url.clone();
+    let persistent_host_id = host.id.clone();
+    let persistent_secret = secret.clone();
+    let factory: Arc<dyn PtyFactory> = Arc::new(TrackingFactory {
+        pty: Arc::new(TrackingPty {
+            closed: AtomicBool::new(false),
+            read_wake: tokio::sync::Notify::new(),
+            closed_notify: tokio::sync::Notify::new(),
+        }),
+        spawned: Arc::new(tokio::sync::Notify::new()),
+    });
+    let persistent = tokio::spawn(async move {
+        for attempt in 0..2 {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            let connection = HostClient::new(
+                &persistent_url,
+                persistent_host_id.clone(),
+                HostIdentity::from_secret_bytes(&persistent_secret),
+                TransportSecurity::AllowInsecureLoopback,
+            )
+            .unwrap()
+            .connect_once()
+            .await
+            .unwrap();
+            connected_task.notify_one();
+            connection
+                .run_with_factory(
+                    HerdrConfig::new(PathBuf::from("herdr"), None).unwrap(),
+                    factory.clone(),
+                )
+                .await
+                .unwrap();
+        }
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), connected.notified())
+        .await
+        .expect("persistent Host should connect");
+    let mut pairing = HostClient::new(
+        &url,
+        host.id.clone(),
+        HostIdentity::from_secret_bytes(&secret),
+        TransportSecurity::AllowInsecureLoopback,
+    )
+    .unwrap()
+    .connect_once()
+    .await
+    .unwrap();
+    let invitation = pairing.create_pairing().await.unwrap();
+    assert!(
+        invitation
+            .pairing_url
+            .starts_with("https://gateway.example.com/pair/")
+    );
+    pairing.close().await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(2), connected.notified())
+        .await
+        .expect("persistent Host should reconnect after pairing command exits");
+    assert!(broker.is_host_online(&host.id).await);
+
+    persistent.abort();
+    server.abort();
+}
+
 #[test]
 fn reconnect_jitter_stays_inside_the_configured_bound() {
     let policy = ReconnectPolicy::with_jitter(

@@ -684,6 +684,8 @@ After authorization, monitor the protected Environment approval, workflow, tag, 
 
 ## External Gate C: SignPath application submission
 
+**Status:** COMPLETE — Polly manually submitted the external form on 2026-11-15. On 2026-11-16, FarPilot learned that SignPath Foundation would not approve the application at this time because the project did not yet show sufficient external public-trust and visibility signals. Reapplication was invited after broader recognition; Phase B remains blocked.
+
 After the public prerelease exists, stop and provide the reviewed `docs/signpath-application.md` packet.
 
 Polly must manually submit the SignPath form. Do not automate browser form submission or handle identity/private contact information.
