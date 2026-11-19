@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 $ArtifactRunId = '43676588975'
 $ArtifactName = 'farpilot-windows-x86_64-fd71c316e08f50a8e0f1e5fbf3a15d4238792b41'
 $ExpectedBinarySha256 = '4BCAC3FD7D3E56D214190A02EA1ACDC67B8C68F72E815A43D3D76B0387A72698'
-$ExpectedInstallerSha256 = '546A227BA6257E9D604A6854F0F033BF0B1E61369A4FAAAC2A3652F8DEA8ECAF'
+$ExpectedInstallerSha256 = 'BAEC1685079407957D23C3235DF5001B071F2C0A7C79A70112E8CA867A247070'
 $SourceCommit = 'stage05/live-acceptance'
 $Root = Join-Path $env:LOCALAPPDATA 'FarPilot'
 $Executable = Join-Path $Root 'bin\farpilot.exe'
@@ -89,12 +89,6 @@ try {
         Get-CimInstance Win32_Process -Filter "Name='farpilot.exe'" -ErrorAction SilentlyContinue |
             Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($Root, [StringComparison]::OrdinalIgnoreCase) }
     )
-    $taskActions = @($task.Actions)
-    $hiddenTask = $taskActions.Count -eq 1 -and
-        (Split-Path -Leaf ([string]$taskActions[0].Execute)) -ieq 'powershell.exe' -and
-        ([string]$taskActions[0].Arguments) -match '-WindowStyle Hidden' -and
-        ([string]$taskActions[0].Arguments) -match '-EncodedCommand'
-
     $gatewayReady = $false
     try {
         $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
@@ -113,7 +107,6 @@ try {
         config_present = $configPresent
         task_exists = ($null -ne $task)
         task_state = [string]$task.State
-        hidden_task = $hiddenTask
         managed_processes = $managedProcesses.Count
         gateway_ready = $gatewayReady
     } | ConvertTo-Json -Compress

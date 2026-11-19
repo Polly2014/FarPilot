@@ -468,11 +468,8 @@ try {
     Assert-True ([bool]$processState[4].Stopped) 'managed current alias process was not stopped'
     $taskState = Get-TestState -LocalAppData $adapter -Name 'task'
     Assert-True ([bool]$taskState.Exists) 'default fresh install did not create startup task'
-    $expectedTaskPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    Assert-Equal -Expected $expectedTaskPowerShell -Actual ([string]$taskState.Executable) -Message 'startup task wrapper is not PowerShell'
-    Assert-True ([string]$taskState.Arguments -match '-WindowStyle Hidden') 'startup task is not hidden'
-    Assert-True ([string]$taskState.Arguments -match '-EncodedCommand') 'startup task does not use an encoded command'
-    Assert-Equal -Expected (Join-Path $adapterRoot 'bin\farpilot.exe') -Actual ([string]$taskState.HostExecutable) -Message 'startup task host executable is wrong'
+    Assert-Equal -Expected (Join-Path $adapterRoot 'bin\farpilot.exe') -Actual ([string]$taskState.Executable) -Message 'startup task executable is wrong'
+    Assert-Equal -Expected 'host start' -Actual ([string]$taskState.Arguments) -Message 'startup task arguments are wrong'
     Assert-Equal -Expected 'Limited' -Actual ([string]$taskState.RunLevel) -Message 'startup task run level is not limited'
 
     $noTask = Initialize-ScenarioRoot 'no-startup-task'

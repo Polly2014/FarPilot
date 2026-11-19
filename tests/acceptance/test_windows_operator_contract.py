@@ -12,11 +12,10 @@ class WindowsStage05Contract(unittest.TestCase):
             "43676588975",
             "farpilot-windows-x86_64-fd71c316e08f50a8e0f1e5fbf3a15d4238792b41",
             "4BCAC3FD7D3E56D214190A02EA1ACDC67B8C68F72E815A43D3D76B0387A72698",
-            "546A227BA6257E9D604A6854F0F033BF0B1E61369A4FAAAC2A3652F8DEA8ECAF",
+            "BAEC1685079407957D23C3235DF5001B071F2C0A7C79A70112E8CA867A247070",
             "stage05/live-acceptance",
             "-LocalPackagePath",
             "Start-ScheduledTask",
-            "hidden_task",
             "ConvertTo-Json",
         ]:
             self.assertIn(required, text)
