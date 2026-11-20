@@ -1,4 +1,8 @@
-#[cfg(windows)]
+#[cfg(any(windows, test))]
+use std::ffi::OsString;
+#[cfg(any(windows, test))]
+use std::io;
+#[cfg(any(windows, test))]
 use std::path::PathBuf;
 
 #[cfg(windows)]
@@ -26,6 +30,34 @@ struct EnrollRequest<'a> {
 struct EnrollResponse {
     host_id: String,
     display_name: String,
+}
+
+#[cfg(any(windows, test))]
+fn resolve_executable_on_path(name: &str, path: Option<OsString>) -> io::Result<PathBuf> {
+    let requested = PathBuf::from(name);
+    if requested.is_absolute() {
+        return requested.canonicalize().and_then(|path| {
+            path.is_file().then_some(path).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, format!("{name} is not a file"))
+            })
+        });
+    }
+    let path = path.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("PATH is not set; cannot locate {name}"),
+        )
+    })?;
+    for directory in std::env::split_paths(&path) {
+        let candidate = directory.join(&requested);
+        if candidate.is_file() {
+            return candidate.canonicalize();
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("{name} was not found on PATH"),
+    ))
 }
 
 pub async fn setup(gateway: Url, enrollment_code: &str, name: &str) -> anyhow::Result<()> {
@@ -67,7 +99,7 @@ pub async fn setup(gateway: Url, enrollment_code: &str, name: &str) -> anyhow::R
             gateway_https: gateway,
             host_id: enrolled.host_id.clone(),
             display_name: enrolled.display_name,
-            herdr_executable: PathBuf::from("herdr.exe"),
+            herdr_executable: resolve_executable_on_path("herdr.exe", std::env::var_os("PATH"))?,
             herdr_session: Some("default".into()),
         };
         config.save(&config_path)?;
@@ -178,5 +210,46 @@ pub async fn start() -> anyhow::Result<()> {
             }
             policy.sleep_before_retry(post_auth_attempt).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn resolves_herdr_to_an_absolute_path_from_path() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "farpilot-herdr-path-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let executable = root.join("herdr.exe");
+        fs::write(&executable, b"fixture").unwrap();
+        let path = std::env::join_paths([&root]).unwrap();
+
+        let resolved = super::resolve_executable_on_path("herdr.exe", Some(path)).unwrap();
+
+        assert!(resolved.is_absolute());
+        assert_eq!(resolved, executable.canonicalize().unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_herdr_is_rejected_before_config_is_saved() {
+        let error = super::resolve_executable_on_path(
+            "herdr.exe",
+            Some(OsString::from("definitely-missing-directory")),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("herdr.exe"));
     }
 }
