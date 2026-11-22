@@ -679,15 +679,16 @@ try {
         ProcessValue = "C:\Unrelated;$adapterRoot\current"
     })
     Write-TestStateFile -LocalAppData $adapter -Name 'processes' -Value @(
-        [PSCustomObject]@{ Id = 101; Name = 'farpilot.exe'; ExecutablePath = "$adapterRoot\releases\0.1.0-x86_64-pc-windows-msvc\farpilot.exe"; Stopped = $false },
+        [PSCustomObject]@{ Id = 101; Name = 'farpilot.exe'; ExecutablePath = "$adapterRoot\releases\0.1.0-x86_64-pc-windows-msvc\farpilot.exe"; Stopped = $false; StopOrder = 0 },
         [PSCustomObject]@{ Id = 102; Name = 'farpilot.exe'; ExecutablePath = 'C:\External\farpilot.exe'; Stopped = $false },
         [PSCustomObject]@{ Id = 103; Name = 'other.exe'; ExecutablePath = "$adapterRoot\releases\0.1.0-x86_64-pc-windows-msvc\other.exe"; Stopped = $false },
         [PSCustomObject]@{ Id = 104; Name = 'farpilot.exe'; ExecutablePath = "$adapterRoot\bin\farpilot.exe"; Stopped = $false },
         [PSCustomObject]@{ Id = 105; Name = 'farpilot.exe'; ExecutablePath = "$adapterRoot\current\farpilot.exe"; Stopped = $false },
-        [PSCustomObject]@{ Id = 106; Name = 'farpilot-host-runner.exe'; ExecutablePath = "$adapterRoot\releases\0.1.0-x86_64-pc-windows-msvc\farpilot-host-runner.exe"; Stopped = $false },
+        [PSCustomObject]@{ Id = 106; Name = 'farpilot-host-runner.exe'; ExecutablePath = "$adapterRoot\releases\0.1.0-x86_64-pc-windows-msvc\farpilot-host-runner.exe"; Stopped = $false; StopOrder = 0 },
         [PSCustomObject]@{ Id = 107; Name = 'farpilot-host-runner.exe'; ExecutablePath = 'C:\External\farpilot-host-runner.exe'; Stopped = $false },
         [PSCustomObject]@{ Id = 108; Name = 'farpilot-host-runner.exe'; ExecutablePath = "$adapterRoot\bin\farpilot-host-runner.exe"; Stopped = $false },
-        [PSCustomObject]@{ Id = 109; Name = 'farpilot-host-runner.exe'; ExecutablePath = "$adapterRoot\current\farpilot-host-runner.exe"; Stopped = $false }
+        [PSCustomObject]@{ Id = 109; Name = 'farpilot-host-runner.exe'; ExecutablePath = "$adapterRoot\current\farpilot-host-runner.exe"; Stopped = $false },
+        [PSCustomObject]@{ Id = 110; Name = 'farpilot.exe'; ExecutablePath = "$adapterRoot\releases\0.1.0-x86_64-pc-windows-msvc\farpilot.exe"; Stopped = $false; Exited = $true }
     )
     Install-Fixture -Scenario $adapter -Package $validZip -Version '0.2.1' -EnableStartupTask | Out-Null
     $pathState = Get-TestState -LocalAppData $adapter -Name 'path'
@@ -709,6 +710,9 @@ try {
     Assert-True (-not [bool]$processState[6].Stopped) 'external same-name runner process was stopped'
     Assert-True ([bool]$processState[7].Stopped) 'managed bin alias runner process was not stopped'
     Assert-True ([bool]$processState[8].Stopped) 'managed current alias runner process was not stopped'
+    Assert-True ([int]$processState[0].StopOrder -gt 0) 'managed CLI stop order was not recorded'
+    Assert-True ([int]$processState[5].StopOrder -gt [int]$processState[0].StopOrder) 'runner stopped before managed CLI child'
+    Assert-True (-not [bool]$processState[9].Stopped) 'already-exited managed CLI was stopped again'
     $taskState = Get-TestState -LocalAppData $adapter -Name 'task'
     Assert-True ([bool]$taskState.Exists) 'default fresh install did not create startup task'
     Assert-Equal -Expected (Join-Path $adapterRoot 'bin\farpilot-host-runner.exe') -Actual ([string]$taskState.Executable) -Message 'startup task executable is not the runner'
@@ -717,22 +721,88 @@ try {
     Assert-Equal -Expected 'Limited' -Actual ([string]$taskState.RunLevel) -Message 'startup task run level is not limited'
     Assert-True ($null -ne $taskState.PSObject.Properties['Trigger']) 'startup task trigger was not recorded'
     Assert-Equal -Expected 'AtLogOn' -Actual ([string]$taskState.Trigger) -Message 'startup task trigger is not AtLogOn'
+    Assert-True ($null -ne $taskState.PSObject.Properties['TriggerUserId']) 'startup task trigger user was not recorded'
+    Assert-Equal -Expected $env:USERNAME -Actual ([string]$taskState.TriggerUserId) -Message 'startup task trigger user is not current user'
+    Assert-True ($null -ne $taskState.PSObject.Properties['LogonType']) 'startup task logon type was not recorded'
+    Assert-Equal -Expected 'Interactive' -Actual ([string]$taskState.LogonType) -Message 'startup task logon type is not Interactive'
+
+    # PID reuse/path mismatch and bounded stop timeout fail before activation.
+    foreach ($processRaceCase in @('pid-path-mismatch', 'stop-timeout')) {
+        $processRaceScenario = Initialize-ScenarioRoot ("process-race-" + $processRaceCase)
+        Install-Fixture -Scenario $processRaceScenario -Package $packages['0.2.0'] -Version '0.2.0' | Out-Null
+        $processRaceRoot = Join-Path $processRaceScenario 'FarPilot'
+        $processRaceCurrent = Get-JunctionTarget (Join-Path $processRaceRoot 'current')
+        $processRecord = [PSCustomObject]@{
+            Id = 151
+            Name = 'farpilot.exe'
+            ExecutablePath = (Join-Path $processRaceCurrent 'farpilot.exe')
+            Stopped = $false
+        }
+        if ($processRaceCase -ceq 'pid-path-mismatch') {
+            $processRecord | Add-Member -NotePropertyName CurrentName -NotePropertyValue 'other.exe'
+            $processRecord | Add-Member -NotePropertyName CurrentExecutablePath -NotePropertyValue 'C:\External\other.exe'
+        } else {
+            $processRecord | Add-Member -NotePropertyName WaitTimedOut -NotePropertyValue $true
+        }
+        Write-TestStateFile -LocalAppData $processRaceScenario -Name 'processes' -Value @($processRecord)
+        $processRaceResult = Invoke-InstallerProcess -LocalAppData $processRaceScenario -PackagePath $validZip -Version '0.2.1' -Sha256 $validZipSha
+        Assert-True ($processRaceResult.ExitCode -ne 0) "$processRaceCase unexpectedly activated"
+        Assert-Equal -Expected $processRaceCurrent -Actual (Get-JunctionTarget (Join-Path $processRaceRoot 'current')) -Message "$processRaceCase changed current"
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $processRaceRoot 'releases\0.2.1-x86_64-pc-windows-msvc'))) "$processRaceCase left new release"
+    }
 
     $noTask = Initialize-ScenarioRoot 'no-startup-task'
     Install-Fixture -Scenario $noTask -Package $packages['0.2.0'] -Version '0.2.0' | Out-Null
     Assert-True (-not [bool](Get-TestState -LocalAppData $noTask -Name 'task').Exists) 'NoStartupTask created a startup task'
 
-    # A prior running task is updated and restarted after successful activation.
+    # A prior running legacy CLI task is migrated to the runner and restarted after activation.
     $runningTask = Initialize-ScenarioRoot 'running-task'
-    Write-TestStateFile -LocalAppData $runningTask -Name 'task' -Value ([PSCustomObject]@{
-        Exists = $true; Running = $true; Executable = 'C:\Old\farpilot.exe'; Arguments = 'host start'
-        UserId = $env:USERNAME; RunLevel = 'Limited'
-    })
+    Install-Fixture -Scenario $runningTask -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
+    $runningLegacyTask = Get-TestState -LocalAppData $runningTask -Name 'task'
+    $runningLegacyTask.Running = $true
+    Write-TestStateFile -LocalAppData $runningTask -Name 'task' -Value $runningLegacyTask
     Install-Fixture -Scenario $runningTask -Package $validZip -Version '0.2.1' -EnableStartupTask | Out-Null
     $runningTaskState = Get-TestState -LocalAppData $runningTask -Name 'task'
     Assert-True ([bool]$runningTaskState.Running) 'prior running task was not restarted'
     Assert-Equal -Expected (Join-Path $runningTask 'FarPilot\bin\farpilot-host-runner.exe') -Actual ([string]$runningTaskState.Executable) -Message 'existing task was not updated to runner'
     Assert-Equal -Expected 'run' -Actual ([string]$runningTaskState.Arguments) -Message 'existing task arguments were not updated to run'
+
+    # Existing task evidence is validated even when install-state metadata exists.
+    foreach ($invalidTaskCase in @('external-executable', 'wrong-arguments', 'wrong-user', 'elevated-runlevel', 'wrong-trigger', 'wrong-trigger-user', 'wrong-logon-type')) {
+        $invalidTaskScenario = Initialize-ScenarioRoot ("invalid-existing-task-" + $invalidTaskCase)
+        Install-Fixture -Scenario $invalidTaskScenario -Package $validZip -Version '0.2.1' -EnableStartupTask | Out-Null
+        $invalidTaskRoot = Join-Path $invalidTaskScenario 'FarPilot'
+        $invalidTask = Get-TestState -LocalAppData $invalidTaskScenario -Name 'task'
+        switch ($invalidTaskCase) {
+            'external-executable' { $invalidTask.Executable = 'C:\External\farpilot-host-runner.exe' }
+            'wrong-arguments' { $invalidTask.Arguments = 'host start' }
+            'wrong-user' { $invalidTask.UserId = 'another-user' }
+            'elevated-runlevel' { $invalidTask.RunLevel = 'Highest' }
+            'wrong-trigger' { $invalidTask.Trigger = 'AtStartup' }
+            'wrong-trigger-user' { $invalidTask | Add-Member -NotePropertyName TriggerUserId -NotePropertyValue 'another-user' -Force }
+            'wrong-logon-type' { $invalidTask | Add-Member -NotePropertyName LogonType -NotePropertyValue 'ServiceAccount' -Force }
+        }
+        Write-TestStateFile -LocalAppData $invalidTaskScenario -Name 'task' -Value $invalidTask
+        $invalidTaskJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $invalidTaskScenario) 'task.json') -Raw
+        $invalidTaskCurrent = Get-JunctionTarget (Join-Path $invalidTaskRoot 'current')
+        $invalidTaskResult = Invoke-InstallerProcess -LocalAppData $invalidTaskScenario -PackagePath $validZip -Version '0.2.1' -Sha256 $validZipSha -EnableStartupTask
+        Assert-True ($invalidTaskResult.ExitCode -ne 0) "$invalidTaskCase existing task unexpectedly upgraded"
+        Assert-Equal -Expected $invalidTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $invalidTaskScenario) 'task.json') -Raw) -Message "$invalidTaskCase existing task changed before validation"
+        Assert-Equal -Expected $invalidTaskCurrent -Actual (Get-JunctionTarget (Join-Path $invalidTaskRoot 'current')) -Message "$invalidTaskCase existing task changed current"
+    }
+
+    $invalidUninstallTask = Initialize-ScenarioRoot 'invalid-existing-task-uninstall'
+    Install-Fixture -Scenario $invalidUninstallTask -Package $validZip -Version '0.2.1' -EnableStartupTask | Out-Null
+    $invalidUninstallRoot = Join-Path $invalidUninstallTask 'FarPilot'
+    $invalidUninstallTaskState = Get-TestState -LocalAppData $invalidUninstallTask -Name 'task'
+    $invalidUninstallTaskState.Executable = 'C:\External\farpilot-host-runner.exe'
+    Write-TestStateFile -LocalAppData $invalidUninstallTask -Name 'task' -Value $invalidUninstallTaskState
+    $invalidUninstallTaskJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $invalidUninstallTask) 'task.json') -Raw
+    $invalidUninstallCurrent = Get-JunctionTarget (Join-Path $invalidUninstallRoot 'current')
+    $invalidUninstallResult = Invoke-UninstallerProcess -LocalAppData $invalidUninstallTask
+    Assert-True ($invalidUninstallResult.ExitCode -ne 0) 'external existing task unexpectedly uninstalled managed state'
+    Assert-Equal -Expected $invalidUninstallTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $invalidUninstallTask) 'task.json') -Raw) -Message 'external existing task changed during rejected uninstall'
+    Assert-Equal -Expected $invalidUninstallCurrent -Actual (Get-JunctionTarget (Join-Path $invalidUninstallRoot 'current')) -Message 'external existing task uninstall changed current'
 
     # Injected failures after each activation boundary restore all prior observable state.
     foreach ($failurePoint in @('DuringPathStateCapture', 'DuringManagedProcessStop', 'AfterCurrentJunction', 'AfterBinJunction', 'AfterPathUpdate', 'DuringTaskUpdate', 'DuringTaskStart')) {
@@ -748,7 +818,7 @@ try {
         $priorBin = Get-JunctionTarget (Join-Path $transactionRoot 'bin')
         $priorPathJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $transaction) 'path.json') -Raw
         $priorTaskJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $transaction) 'task.json') -Raw
-        $failure = Invoke-InstallerProcess -LocalAppData $transaction -PackagePath $packages['0.2.1'] -Version '0.2.1' -Sha256 (Get-FileHash -Algorithm SHA256 $packages['0.2.1']).Hash -EnableStartupTask -FailAfter $failurePoint
+        $failure = Invoke-InstallerProcess -LocalAppData $transaction -PackagePath $validZip -Version '0.2.1' -Sha256 (Get-FileHash -Algorithm SHA256 $validZip).Hash -EnableStartupTask -FailAfter $failurePoint
         Assert-True ($failure.ExitCode -ne 0) "$failurePoint unexpectedly succeeded"
         Assert-Equal -Expected $priorCurrent -Actual (Get-JunctionTarget (Join-Path $transactionRoot 'current')) -Message "$failurePoint did not restore current"
         Assert-Equal -Expected $priorBin -Actual (Get-JunctionTarget (Join-Path $transactionRoot 'bin')) -Message "$failurePoint did not restore bin"
@@ -1026,6 +1096,10 @@ try {
         $failedUninstall = Initialize-ScenarioRoot ("uninstall-failure-" + $failurePoint)
         Install-Fixture -Scenario $failedUninstall -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
         $failedRoot = Join-Path $failedUninstall 'FarPilot'
+        $failedRuntime = Join-Path $failedRoot 'runtime'
+        New-Item -ItemType Directory -Path $failedRuntime | Out-Null
+        'runtime-status-sentinel' | Set-Content -LiteralPath (Join-Path $failedRuntime 'host-status.json')
+        'runtime-log-sentinel' | Set-Content -LiteralPath (Join-Path $failedRuntime 'host.log')
         $failedTask = Get-TestState -LocalAppData $failedUninstall -Name 'task'
         $failedTask.Running = $true
         Write-TestStateFile -LocalAppData $failedUninstall -Name 'task' -Value $failedTask
@@ -1040,6 +1114,8 @@ try {
         Assert-True (Test-Path -LiteralPath (Join-Path $failedRoot 'releases\0.2.0-x86_64-pc-windows-msvc\farpilot.exe')) "$failurePoint removed releases"
         Assert-Equal -Expected $failedTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $failedUninstall) 'task.json') -Raw) -Message "$failurePoint did not restore running task"
         Assert-Equal -Expected $failedPathJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $failedUninstall) 'path.json') -Raw) -Message "$failurePoint changed PATH"
+        Assert-Equal -Expected 'runtime-status-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $failedRuntime 'host-status.json') -Raw).Trim() -Message "$failurePoint did not restore runtime status"
+        Assert-Equal -Expected 'runtime-log-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $failedRuntime 'host.log') -Raw).Trim() -Message "$failurePoint did not restore runtime log"
         Assert-True ($failure.Output -match '(?i)remaining|failed') "$failurePoint did not report remaining managed state"
     }
 
@@ -1082,6 +1158,39 @@ try {
     $unsafeUninstallResult = Invoke-UninstallerProcess -LocalAppData $uninstallUnsafe
     Assert-True ($unsafeUninstallResult.ExitCode -ne 0) 'uninstall followed unmanaged current junction'
     Assert-Equal -Expected 'external-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $uninstallExternal 'keep.txt') -Raw).Trim() -Message 'uninstall deleted external target'
+
+    # Unknown or reparse runtime entries are rejected before task, PATH, alias, or release mutation.
+    foreach ($unsafeRuntimeCase in @('unknown-file', 'reparse-entry')) {
+        $unsafeRuntimeScenario = Initialize-ScenarioRoot ("uninstall-unsafe-runtime-" + $unsafeRuntimeCase)
+        Install-Fixture -Scenario $unsafeRuntimeScenario -Package $validZip -Version '0.2.1' -EnableStartupTask | Out-Null
+        $unsafeRuntimeRoot = Join-Path $unsafeRuntimeScenario 'FarPilot'
+        $unsafeRuntimeDir = Join-Path $unsafeRuntimeRoot 'runtime'
+        New-Item -ItemType Directory -Force -Path $unsafeRuntimeDir | Out-Null
+        $unsafeRuntimeExternal = $null
+        if ($unsafeRuntimeCase -ceq 'unknown-file') {
+            'unknown-runtime-sentinel' | Set-Content -LiteralPath (Join-Path $unsafeRuntimeDir 'operator-note.txt')
+        } else {
+            $unsafeRuntimeExternal = Join-Path $unsafeRuntimeScenario 'external-runtime-target'
+            New-Item -ItemType Directory -Path $unsafeRuntimeExternal | Out-Null
+            'external-runtime-sentinel' | Set-Content -LiteralPath (Join-Path $unsafeRuntimeExternal 'keep.txt')
+            New-Item -ItemType Junction -Path (Join-Path $unsafeRuntimeDir 'host.log.1') -Target $unsafeRuntimeExternal | Out-Null
+        }
+        $unsafeRuntimeCurrent = Get-JunctionTarget (Join-Path $unsafeRuntimeRoot 'current')
+        $unsafeRuntimeBin = Get-JunctionTarget (Join-Path $unsafeRuntimeRoot 'bin')
+        $unsafeRuntimeTaskJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $unsafeRuntimeScenario) 'task.json') -Raw
+        $unsafeRuntimePathJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $unsafeRuntimeScenario) 'path.json') -Raw
+        $unsafeRuntimeResult = Invoke-UninstallerProcess -LocalAppData $unsafeRuntimeScenario
+        Assert-True ($unsafeRuntimeResult.ExitCode -ne 0) "$unsafeRuntimeCase runtime unexpectedly uninstalled"
+        Assert-Equal -Expected $unsafeRuntimeCurrent -Actual (Get-JunctionTarget (Join-Path $unsafeRuntimeRoot 'current')) -Message "$unsafeRuntimeCase runtime changed current"
+        Assert-Equal -Expected $unsafeRuntimeBin -Actual (Get-JunctionTarget (Join-Path $unsafeRuntimeRoot 'bin')) -Message "$unsafeRuntimeCase runtime changed bin"
+        Assert-Equal -Expected $unsafeRuntimeTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $unsafeRuntimeScenario) 'task.json') -Raw) -Message "$unsafeRuntimeCase runtime changed task"
+        Assert-Equal -Expected $unsafeRuntimePathJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $unsafeRuntimeScenario) 'path.json') -Raw) -Message "$unsafeRuntimeCase runtime changed PATH"
+        if ($unsafeRuntimeCase -ceq 'unknown-file') {
+            Assert-Equal -Expected 'unknown-runtime-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $unsafeRuntimeDir 'operator-note.txt') -Raw).Trim() -Message 'unknown runtime file changed'
+        } else {
+            Assert-Equal -Expected 'external-runtime-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $unsafeRuntimeExternal 'keep.txt') -Raw).Trim() -Message 'runtime reparse target changed'
+        }
+    }
 
     # The complete release deletion tree is preflighted before task/process/PATH mutation.
     $preflightCases = @('unmanaged-directory', 'reparse-entry', 'unknown-nested-file', 'nested-release-junction')
