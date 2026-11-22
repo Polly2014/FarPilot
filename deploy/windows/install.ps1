@@ -169,9 +169,11 @@ function Expand-VerifiedFarPilotPackage {
                     if ($accepted.ContainsKey($canonicalName)) { throw "FarPilot ZIP contains a duplicate entry: $name" }
                     $attributeBits = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$entry.ExternalAttributes), 0)
                     $unixFileType = ($attributeBits -shr 16) -band [uint32]0xF000
-                    if ($unixFileType -eq [uint32]0xA000 -or
-                        ($attributeBits -band [uint32]0x400) -ne 0) {
-                        throw "FarPilot ZIP contains a symlink or reparse entry: $name"
+                    $nonRegularUnixType = $unixFileType -ne 0 -and $unixFileType -ne [uint32]0x8000
+                    $dosDirectory = ($attributeBits -band [uint32]0x10) -ne 0
+                    $dosReparsePoint = ($attributeBits -band [uint32]0x400) -ne 0
+                    if ($nonRegularUnixType -or $dosDirectory -or $dosReparsePoint) {
+                        throw "FarPilot ZIP contains a nonregular, directory, symlink, or reparse entry: $name"
                     }
                     if ([long]$entry.Length -le 0 -or [long]$entry.Length -gt $MaxZipEntryBytes) {
                         throw "FarPilot ZIP entry exceeds the size limit: $name"
