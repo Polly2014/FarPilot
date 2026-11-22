@@ -134,7 +134,7 @@ def main() -> None:
         raise SystemExit("manifest target set is incomplete")
     asset_records: list[tuple[str, str, str, tuple[str, str], str]] = []
     for target, record in assets.items():
-        expected_format = "exe" if target == "windows-x86_64" else "binary"
+        expected_format = "zip" if target == "windows-x86_64" else "binary"
         filename, expected_digest, url, repository = checked_record(
             record, f"asset {target}", version, expected_format
         )

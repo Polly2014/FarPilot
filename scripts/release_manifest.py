@@ -77,7 +77,7 @@ def asset_record(
     return {
         "url": f"https://github.com/{repository}/releases/download/{tag}/{path.name}",
         "sha256": digest(path),
-        "format": "exe" if target == "windows-x86_64" else "binary",
+        "format": "zip" if target == "windows-x86_64" else "binary",
     }
 
 
