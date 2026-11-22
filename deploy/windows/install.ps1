@@ -452,9 +452,7 @@ function Assert-ManagedReleaseTarget {
     if ($releaseName -notmatch '^([0-9]+\.[0-9]+\.[0-9]+)-x86_64-pc-windows-msvc$') {
         throw "FarPilot junction target has an invalid release name: $AliasPath -> $Target"
     }
-    $expectedVersion = $Matches[1]
-    $layout = Get-FarPilotReleaseLayout -Path $Target -Label 'junction target release'
-    Assert-FarPilotReleaseVersion -Layout $layout -ExpectedVersion $expectedVersion -Label 'FarPilot junction target'
+    Get-FarPilotReleaseLayout -Path $Target -Label 'junction target release' | Out-Null
 }
 
 function Get-JunctionState {
@@ -1381,10 +1379,10 @@ try {
     $releaseExists = Test-Path -LiteralPath $ReleaseDir
     if ($releaseExists) {
         $existingLayout = Get-FarPilotReleaseLayout -Path $ReleaseDir -Label 'existing release'
-        Assert-FarPilotReleaseVersion -Layout $existingLayout -ExpectedVersion $requestedVersion -Label 'Existing FarPilot release'
         if (-not (Compare-FarPilotReleaseContent -Expected $stagedLayout -Actual $existingLayout)) {
             throw 'Existing FarPilot release bytes differ from the verified package'
         }
+        Assert-FarPilotReleaseVersion -Layout $existingLayout -ExpectedVersion $requestedVersion -Label 'Existing FarPilot release'
     }
 
     # Capture every non-mutating rollback input before stopping the task or processes.
