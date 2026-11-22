@@ -671,11 +671,13 @@ dependencies = [
 name = "farpilot-host-runner"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "farpilot-host",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
