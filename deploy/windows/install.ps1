@@ -19,12 +19,15 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+Add-Type -AssemblyName System.IO.Compression
 
 $TargetTriple = 'x86_64-pc-windows-msvc'
 $TargetName = 'windows-x86_64'
 $RepositoryOwner = 'Polly2014'
 $RepositoryName = 'FarPilot'
 $TaskName = 'FarPilot Host'
+$MaxZipEntryBytes = [long](64MB)
+$MaxZipAggregateBytes = [long](96MB)
 $script:UseTestAdapters = $false
 $script:TestStateRoot = $null
 
@@ -110,13 +113,14 @@ function Test-FileDigest {
 }
 
 function Get-ExecutableVersion {
-    param([string]$Path)
+    param([string]$Path, [string]$ProductName = 'farpilot')
     $output = & $Path --version 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) {
         throw "FarPilot executable failed --version: $Path"
     }
     $line = $output.Trim()
-    if ($line -notmatch '^farpilot ([0-9]+\.[0-9]+\.[0-9]+)$') {
+    $product = [regex]::Escape($ProductName)
+    if ($line -notmatch "^$product ([0-9]+\.[0-9]+\.[0-9]+)$") {
         throw "FarPilot executable returned an invalid version: $line"
     }
     return $Matches[1]
@@ -128,6 +132,154 @@ function Test-AuthenticodePolicy {
     if ($signature.Status -notin @('Valid', 'NotSigned')) {
         throw "FarPilot Authenticode signature is $($signature.Status)"
     }
+}
+
+function Expand-VerifiedFarPilotPackage {
+    param([string]$ArchivePath, [string]$Destination)
+    if (-not (Test-RegularFile $ArchivePath)) { throw "FarPilot ZIP is not a regular file: $ArchivePath" }
+    if (Test-Path -LiteralPath $Destination) { throw "FarPilot ZIP destination already exists: $Destination" }
+    $destinationParent = Split-Path -Parent $Destination
+    if (-not (Test-RegularDirectory $destinationParent)) { throw "FarPilot ZIP destination parent is unsafe: $destinationParent" }
+    $createdDestination = $false
+    try {
+        $archiveFile = [IO.File]::Open($ArchivePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        try {
+            $archive = [IO.Compression.ZipArchive]::new($archiveFile, [IO.Compression.ZipArchiveMode]::Read, $false)
+            try {
+                $entries = @($archive.Entries)
+                if ($entries.Count -ne 2) { throw 'FarPilot ZIP must contain exactly two entries' }
+                $accepted = @{}
+                $aggregate = [long]0
+                foreach ($entry in $entries) {
+                    $name = [string]$entry.FullName
+                    if ([string]::IsNullOrWhiteSpace($name) -or $name.EndsWith('/') -or $name.EndsWith('\')) {
+                        throw 'FarPilot ZIP contains a directory or empty entry'
+                    }
+                    if ([IO.Path]::IsPathRooted($name) -or $name.Contains('/') -or $name.Contains('\') -or
+                        $name.Contains('..') -or $name.Contains(':')) {
+                        throw "FarPilot ZIP contains an unsafe entry name: $name"
+                    }
+                    $canonicalName = if ($name -ieq 'farpilot.exe') {
+                        'farpilot.exe'
+                    } elseif ($name -ieq 'farpilot-host-runner.exe') {
+                        'farpilot-host-runner.exe'
+                    } else {
+                        throw "FarPilot ZIP contains an unexpected entry: $name"
+                    }
+                    if ($accepted.ContainsKey($canonicalName)) { throw "FarPilot ZIP contains a duplicate entry: $name" }
+                    $attributeBits = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$entry.ExternalAttributes), 0)
+                    $unixFileType = ($attributeBits -shr 16) -band [uint32]0xF000
+                    if ($unixFileType -eq [uint32]0xA000 -or
+                        ($attributeBits -band [uint32]0x400) -ne 0) {
+                        throw "FarPilot ZIP contains a symlink or reparse entry: $name"
+                    }
+                    if ([long]$entry.Length -le 0 -or [long]$entry.Length -gt $MaxZipEntryBytes) {
+                        throw "FarPilot ZIP entry exceeds the size limit: $name"
+                    }
+                    $aggregate += [long]$entry.Length
+                    if ($aggregate -gt $MaxZipAggregateBytes) { throw 'FarPilot ZIP exceeds the aggregate size limit' }
+                    $accepted[$canonicalName] = $entry
+                }
+                if (-not $accepted.ContainsKey('farpilot.exe') -or -not $accepted.ContainsKey('farpilot-host-runner.exe')) {
+                    throw 'FarPilot ZIP is missing a required executable'
+                }
+
+                New-Item -ItemType Directory -Path $Destination | Out-Null
+                $createdDestination = $true
+                foreach ($canonicalName in @('farpilot.exe', 'farpilot-host-runner.exe')) {
+                    $entry = $accepted[$canonicalName]
+                    $outputPath = Join-Path $Destination $canonicalName
+                    $input = $entry.Open()
+                    try {
+                        $output = [IO.File]::Open($outputPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                        try {
+                            $buffer = [byte[]]::new(1MB)
+                            $written = [long]0
+                            while (($read = $input.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                                $written += [long]$read
+                                if ($written -gt [long]$entry.Length -or $written -gt $MaxZipEntryBytes) {
+                                    throw "FarPilot ZIP entry expanded beyond its declared limit: $canonicalName"
+                                }
+                                $output.Write($buffer, 0, $read)
+                            }
+                            if ($written -ne [long]$entry.Length) {
+                                throw "FarPilot ZIP entry length changed during extraction: $canonicalName"
+                            }
+                            $output.Flush($true)
+                        } finally {
+                            $output.Dispose()
+                        }
+                    } finally {
+                        $input.Dispose()
+                    }
+                }
+            } finally {
+                $archive.Dispose()
+            }
+        } finally {
+            $archiveFile.Dispose()
+        }
+        foreach ($required in @('farpilot.exe', 'farpilot-host-runner.exe')) {
+            $path = Join-Path $Destination $required
+            if (-not (Test-RegularFile $path)) { throw "FarPilot ZIP extracted an unsafe executable: $required" }
+        }
+    } catch {
+        if ($createdDestination -and (Test-RegularDirectory $Destination)) {
+            Remove-Item -LiteralPath $Destination -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+}
+
+function Get-FarPilotReleaseLayout {
+    param([string]$Path, [string]$Label = 'release')
+    if (-not (Test-RegularDirectory $Path)) { throw "FarPilot $Label is not a regular directory: $Path" }
+    $entries = @(Get-ChildItem -LiteralPath $Path -Force)
+    if ($entries.Count -eq 1 -and $entries[0].Name -ieq 'farpilot.exe' -and (Test-RegularFile $entries[0].FullName)) {
+        return [PSCustomObject]@{
+            Format = 'exe'
+            Cli = (Join-Path $Path 'farpilot.exe')
+            Runner = $null
+            FileNames = @('farpilot.exe')
+        }
+    }
+    if ($entries.Count -eq 2) {
+        $cli = Join-Path $Path 'farpilot.exe'
+        $runner = Join-Path $Path 'farpilot-host-runner.exe'
+        if ((Test-RegularFile $cli) -and (Test-RegularFile $runner) -and
+            @($entries | Where-Object { $_.Name -inotmatch '^farpilot(?:-host-runner)?\.exe$' }).Count -eq 0) {
+            return [PSCustomObject]@{
+                Format = 'zip'
+                Cli = $cli
+                Runner = $runner
+                FileNames = @('farpilot.exe', 'farpilot-host-runner.exe')
+            }
+        }
+    }
+    throw "FarPilot $Label has unexpected contents: $Path"
+}
+
+function Assert-FarPilotReleaseBinaries {
+    param([object]$Layout, [string]$ExpectedVersion, [string]$Label)
+    Test-AuthenticodePolicy $Layout.Cli
+    $cliVersion = Get-ExecutableVersion $Layout.Cli
+    if ($cliVersion -cne $ExpectedVersion) { throw "$Label CLI version $cliVersion does not match $ExpectedVersion" }
+    if ($Layout.Format -ceq 'zip') {
+        Test-AuthenticodePolicy $Layout.Runner
+        $runnerVersion = Get-ExecutableVersion -Path $Layout.Runner -ProductName 'farpilot-host-runner'
+        if ($runnerVersion -cne $ExpectedVersion) { throw "$Label runner version $runnerVersion does not match $ExpectedVersion" }
+    }
+}
+
+function Compare-FarPilotReleaseBytes {
+    param([object]$Expected, [object]$Actual)
+    if ($Expected.Format -cne $Actual.Format) { return $false }
+    foreach ($name in @($Expected.FileNames)) {
+        $expectedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path (Split-Path -Parent $Expected.Cli) $name)).Hash
+        $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path (Split-Path -Parent $Actual.Cli) $name)).Hash
+        if ($expectedHash -cne $actualHash) { return $false }
+    }
+    return $true
 }
 
 function Invoke-CurlDownload {
@@ -231,8 +383,8 @@ function Get-ManifestPackage {
     }
     $asset = $assetProperty.Value
     Assert-ExactPropertySet -Value $asset -Expected @('url', 'sha256', 'format') -Label 'FarPilot Windows asset'
-    if ([string]$asset.format -cne 'exe') {
-        throw 'FarPilot Windows manifest asset must use exe format'
+    if ([string]$asset.format -cne 'zip') {
+        throw 'FarPilot Windows manifest asset must use zip format'
     }
     $sha = [string]$asset.sha256
     if ($sha -notmatch '^[0-9a-f]{64}$') {
@@ -250,10 +402,10 @@ function Get-ManifestPackage {
     $segments = @($uri.AbsolutePath.Trim('/').Split('/'))
     if ($segments.Count -ne 6 -or $segments[0] -cne $RepositoryOwner -or $segments[1] -cne $RepositoryName -or
         $segments[2] -cne 'releases' -or $segments[3] -cne 'download' -or
-        $segments[4] -cne "v$manifestVersion" -or $segments[5] -cne 'farpilot-windows-x86_64.exe') {
+        $segments[4] -cne "v$manifestVersion" -or $segments[5] -cne 'farpilot-windows-x86_64.zip') {
         throw 'FarPilot Windows manifest asset URL has an invalid Release path'
     }
-    return [PSCustomObject]@{ Version = $manifestVersion; Url = $url; Sha256 = $sha }
+    return [PSCustomObject]@{ Version = $manifestVersion; Url = $url; Sha256 = $sha; Format = 'zip' }
 }
 
 function Enter-InstallLock {
@@ -299,15 +451,8 @@ function Assert-ManagedReleaseTarget {
         throw "FarPilot junction target has an invalid release name: $AliasPath -> $Target"
     }
     $expectedVersion = $Matches[1]
-    $entries = @(Get-ChildItem -LiteralPath $Target -Force)
-    $executable = Join-Path $Target 'farpilot.exe'
-    if ($entries.Count -ne 1 -or $entries[0].Name -ine 'farpilot.exe' -or -not (Test-RegularFile $executable)) {
-        throw "FarPilot junction target is an incomplete managed release: $AliasPath -> $Target"
-    }
-    $reportedVersion = Get-ExecutableVersion $executable
-    if ($reportedVersion -cne $expectedVersion) {
-        throw "FarPilot junction target version does not match its directory: $AliasPath -> $Target"
-    }
+    $layout = Get-FarPilotReleaseLayout -Path $Target -Label 'junction target release'
+    Assert-FarPilotReleaseBinaries -Layout $layout -ExpectedVersion $expectedVersion -Label 'FarPilot junction target'
 }
 
 function Get-JunctionState {
@@ -845,10 +990,7 @@ function Assert-NoReparseTree {
 function Assert-FarPilotReleaseDirectoryShape {
     param([string]$Path, [string]$Kind)
     Assert-NoReparseTree -Path $Path -Label $Kind
-    $entries = @(Get-ChildItem -LiteralPath $Path -Force)
-    if ($entries.Count -ne 1 -or $entries[0].Name -ine 'farpilot.exe' -or -not (Test-RegularFile $entries[0].FullName)) {
-        throw "Refusing unexpected contents in $Kind directory: $Path"
-    }
+    Get-FarPilotReleaseLayout -Path $Path -Label $Kind | Out-Null
 }
 
 function Get-FarPilotUninstallDeletionPlan {
@@ -1157,7 +1299,17 @@ if ($localMode) {
     }
     $requestedVersion = $packageVersion
     if (-not (Test-RegularFile $LocalPackagePath)) { throw "Local FarPilot package is not a regular file: $LocalPackagePath" }
-    $package = [PSCustomObject]@{ Version = $packageVersion; Path = (Get-CanonicalPath $LocalPackagePath); Sha256 = $LocalPackageSha256; Url = $null }
+    $extension = [IO.Path]::GetExtension($LocalPackagePath).ToLowerInvariant()
+    $packageFormat = if ($extension -ceq '.zip') { 'zip' } elseif ($extension -ceq '.exe') { 'exe' } else {
+        throw "Local FarPilot package must be a .zip or legacy .exe file: $LocalPackagePath"
+    }
+    $package = [PSCustomObject]@{
+        Version = $packageVersion
+        Path = (Get-CanonicalPath $LocalPackagePath)
+        Sha256 = $LocalPackageSha256
+        Url = $null
+        Format = $packageFormat
+    }
     $sourceDescription = $package.Path
 } else {
     if ([string]::IsNullOrWhiteSpace($ManifestUrl)) {
@@ -1173,7 +1325,7 @@ if ($localMode) {
     }
     $manifest = Get-RemoteManifest $ManifestUrl
     $remote = Get-ManifestPackage -Manifest $manifest -RequestedVersion $requestedVersion
-    $package = [PSCustomObject]@{ Version = $remote.Version; Path = $null; Sha256 = $remote.Sha256; Url = $remote.Url }
+    $package = [PSCustomObject]@{ Version = $remote.Version; Path = $null; Sha256 = $remote.Sha256; Url = $remote.Url; Format = $remote.Format }
     $requestedVersion = $remote.Version
     $sourceDescription = $remote.Url
 }
@@ -1207,32 +1359,30 @@ $stagingDir = Join-Path $ReleasesDir ('.staging.' + $ReleaseName + '.' + $PID)
 $taskState = [PSCustomObject]@{ Exists = $false; Running = $false; Definition = $null }
 try {
     New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
-    $download = if ($localMode) { $package.Path } else { Join-Path $tempDir 'farpilot.exe' }
+    $downloadName = if ($package.Format -ceq 'zip') { 'farpilot-windows-x86_64.zip' } else { 'farpilot.exe' }
+    $download = if ($localMode) { $package.Path } else { Join-Path $tempDir $downloadName }
     if (-not $localMode) { Invoke-CurlDownload -Uri $package.Url -Destination $download }
     Test-FileDigest -Path $download -Expected $package.Sha256
-    Test-AuthenticodePolicy $download
-    $reported = Get-ExecutableVersion $download
-    if ($reported -cne $requestedVersion) { throw "FarPilot binary version $reported does not match $requestedVersion" }
+
+    if (Test-Path -LiteralPath $stagingDir) { throw "Staging path already exists: $stagingDir" }
+    if ($package.Format -ceq 'zip') {
+        Expand-VerifiedFarPilotPackage -ArchivePath $download -Destination $stagingDir
+    } else {
+        New-Item -ItemType Directory -Path $stagingDir | Out-Null
+        Copy-Item -LiteralPath $download -Destination (Join-Path $stagingDir 'farpilot.exe')
+        Test-FileDigest -Path (Join-Path $stagingDir 'farpilot.exe') -Expected $package.Sha256
+    }
+    $stagedLayout = Get-FarPilotReleaseLayout -Path $stagingDir -Label 'staged release'
+    if ($stagedLayout.Format -cne $package.Format) { throw 'Staged FarPilot release format does not match the package format' }
+    Assert-FarPilotReleaseBinaries -Layout $stagedLayout -ExpectedVersion $requestedVersion -Label 'Staged FarPilot release'
 
     $releaseExists = Test-Path -LiteralPath $ReleaseDir
     if ($releaseExists) {
-        if (-not (Test-RegularDirectory $ReleaseDir)) { throw "Existing FarPilot release path is unsafe: $ReleaseDir" }
-        $entries = @(Get-ChildItem -LiteralPath $ReleaseDir -Force)
-        if ($entries.Count -ne 1 -or $entries[0].Name -ine 'farpilot.exe' -or -not (Test-RegularFile $ReleaseExe)) {
-            throw "Existing FarPilot release is incomplete or unmanaged: $ReleaseDir"
+        $existingLayout = Get-FarPilotReleaseLayout -Path $ReleaseDir -Label 'existing release'
+        Assert-FarPilotReleaseBinaries -Layout $existingLayout -ExpectedVersion $requestedVersion -Label 'Existing FarPilot release'
+        if (-not (Compare-FarPilotReleaseBytes -Expected $stagedLayout -Actual $existingLayout)) {
+            throw 'Existing FarPilot release bytes differ from the verified package'
         }
-        Test-FileDigest -Path $ReleaseExe -Expected $package.Sha256
-        Test-AuthenticodePolicy $ReleaseExe
-        $existingVersion = Get-ExecutableVersion $ReleaseExe
-        if ($existingVersion -cne $requestedVersion) { throw "Existing release has wrong version: $existingVersion" }
-    } else {
-        if (Test-Path -LiteralPath $stagingDir) { throw "Staging path already exists: $stagingDir" }
-        New-Item -ItemType Directory -Path $stagingDir | Out-Null
-        Copy-Item -LiteralPath $download -Destination (Join-Path $stagingDir 'farpilot.exe')
-        $stagedExe = Join-Path $stagingDir 'farpilot.exe'
-        Test-FileDigest -Path $stagedExe -Expected $package.Sha256
-        Test-AuthenticodePolicy $stagedExe
-        if ((Get-ExecutableVersion $stagedExe) -cne $requestedVersion) { throw 'Staged FarPilot version changed during copy' }
     }
 
     # Capture every non-mutating rollback input before stopping the task or processes.

@@ -410,6 +410,21 @@ try {
         [PSCustomObject]@{ Name = 'farpilot.exe'; SourcePath = $zipCli; ExternalAttributes = [int][IO.FileAttributes]::ReparsePoint },
         $validEntries[1]
     )
+    $invalidZips['Unix directory external attributes'] = Join-Path $fixtures 'unix-directory-attributes.zip'
+    $null = Initialize-TestZipPackage -Destination $invalidZips['Unix directory external attributes'] -Entries @(
+        [PSCustomObject]@{ Name = 'farpilot.exe'; SourcePath = $zipCli; ExternalAttributes = 1107230720 },
+        $validEntries[1]
+    )
+    $invalidZips['DOS directory external attributes'] = Join-Path $fixtures 'dos-directory-attributes.zip'
+    $null = Initialize-TestZipPackage -Destination $invalidZips['DOS directory external attributes'] -Entries @(
+        [PSCustomObject]@{ Name = 'farpilot.exe'; SourcePath = $zipCli; ExternalAttributes = [int][IO.FileAttributes]::Directory },
+        $validEntries[1]
+    )
+    $invalidZips['Unix nonregular external attributes'] = Join-Path $fixtures 'unix-nonregular-attributes.zip'
+    $null = Initialize-TestZipPackage -Destination $invalidZips['Unix nonregular external attributes'] -Entries @(
+        [PSCustomObject]@{ Name = 'farpilot.exe'; SourcePath = $zipCli; ExternalAttributes = 570359808 },
+        $validEntries[1]
+    )
     $invalidZips['oversized entry'] = Join-Path $fixtures 'oversized-entry.zip'
     $null = Initialize-TestZipPackage -Destination $invalidZips['oversized entry'] -Entries @(
         [PSCustomObject]@{ Name = 'farpilot.exe'; Size = ($MaxZipEntryBytes + 1) },
