@@ -19,14 +19,18 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+Add-Type -AssemblyName System.IO.Compression
 
 $TargetTriple = 'x86_64-pc-windows-msvc'
 $TargetName = 'windows-x86_64'
 $RepositoryOwner = 'Polly2014'
 $RepositoryName = 'FarPilot'
 $TaskName = 'FarPilot Host'
+$MaxZipEntryBytes = [long](64MB)
+$MaxZipAggregateBytes = [long](96MB)
 $script:UseTestAdapters = $false
 $script:TestStateRoot = $null
+$script:TestCurrentUserSid = 'S-1-5-21-1000'
 
 function Write-Step {
     param([string]$Message)
@@ -91,6 +95,36 @@ function Get-CanonicalPath {
     return [IO.Path]::GetFullPath($Path).TrimEnd([char]'\')
 }
 
+function Get-FarPilotCurrentUserSid {
+    if ($script:UseTestAdapters) { return $script:TestCurrentUserSid }
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($null -eq $identity -or $null -eq $identity.User) { throw 'Unable to resolve the current Windows user SID' }
+    return [string]$identity.User.Value
+}
+
+function Resolve-FarPilotAccountSid {
+    param([string]$Identity)
+    if ([string]::IsNullOrWhiteSpace($Identity)) { throw 'FarPilot task identity is missing' }
+    if ($Identity -match '^S-1-(?:[0-9]+-)+[0-9]+$') {
+        try {
+            return [string]([Security.Principal.SecurityIdentifier]::new($Identity)).Value
+        } catch {
+            throw "FarPilot task identity contains an invalid SID: $Identity"
+        }
+    }
+    if ($script:UseTestAdapters) {
+        $leaf = @($Identity.Split('\'))[-1]
+        if ($leaf -ieq $env:USERNAME) { return $script:TestCurrentUserSid }
+        throw "FarPilot test task identity is not resolvable: $Identity"
+    }
+    try {
+        $account = [Security.Principal.NTAccount]::new($Identity)
+        return [string]($account.Translate([Security.Principal.SecurityIdentifier])).Value
+    } catch {
+        throw "Unable to resolve FarPilot task identity to SID: $Identity"
+    }
+}
+
 function Test-PathInside {
     param([string]$Path, [string]$Parent)
     $candidate = Get-CanonicalPath $Path
@@ -110,13 +144,14 @@ function Test-FileDigest {
 }
 
 function Get-ExecutableVersion {
-    param([string]$Path)
+    param([string]$Path, [string]$ProductName = 'farpilot')
     $output = & $Path --version 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) {
         throw "FarPilot executable failed --version: $Path"
     }
     $line = $output.Trim()
-    if ($line -notmatch '^farpilot ([0-9]+\.[0-9]+\.[0-9]+)$') {
+    $product = [regex]::Escape($ProductName)
+    if ($line -notmatch "^$product ([0-9]+\.[0-9]+\.[0-9]+)$") {
         throw "FarPilot executable returned an invalid version: $line"
     }
     return $Matches[1]
@@ -128,6 +163,191 @@ function Test-AuthenticodePolicy {
     if ($signature.Status -notin @('Valid', 'NotSigned')) {
         throw "FarPilot Authenticode signature is $($signature.Status)"
     }
+}
+
+function Expand-VerifiedFarPilotPackage {
+    param([string]$ArchivePath, [string]$Destination)
+    if (-not (Test-RegularFile $ArchivePath)) { throw "FarPilot ZIP is not a regular file: $ArchivePath" }
+    if (Test-Path -LiteralPath $Destination) { throw "FarPilot ZIP destination already exists: $Destination" }
+    $destinationParent = Split-Path -Parent $Destination
+    if (-not (Test-RegularDirectory $destinationParent)) { throw "FarPilot ZIP destination parent is unsafe: $destinationParent" }
+    $createdDestination = $false
+    try {
+        $archiveFile = [IO.File]::Open($ArchivePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        try {
+            $archive = [IO.Compression.ZipArchive]::new($archiveFile, [IO.Compression.ZipArchiveMode]::Read, $false)
+            try {
+                $entries = @($archive.Entries)
+                if ($entries.Count -ne 2) { throw 'FarPilot ZIP must contain exactly two entries' }
+                $accepted = @{}
+                $aggregate = [long]0
+                foreach ($entry in $entries) {
+                    $name = [string]$entry.FullName
+                    if ([string]::IsNullOrWhiteSpace($name) -or $name.EndsWith('/') -or $name.EndsWith('\')) {
+                        throw 'FarPilot ZIP contains a directory or empty entry'
+                    }
+                    if ([IO.Path]::IsPathRooted($name) -or $name.Contains('/') -or $name.Contains('\') -or
+                        $name.Contains('..') -or $name.Contains(':')) {
+                        throw "FarPilot ZIP contains an unsafe entry name: $name"
+                    }
+                    $canonicalName = if ($name -ieq 'farpilot.exe') {
+                        'farpilot.exe'
+                    } elseif ($name -ieq 'farpilot-host-runner.exe') {
+                        'farpilot-host-runner.exe'
+                    } else {
+                        throw "FarPilot ZIP contains an unexpected entry: $name"
+                    }
+                    if ($accepted.ContainsKey($canonicalName)) { throw "FarPilot ZIP contains a duplicate entry: $name" }
+                    $attributeBits = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$entry.ExternalAttributes), 0)
+                    $unixFileType = ($attributeBits -shr 16) -band [uint32]0xF000
+                    $nonRegularUnixType = $unixFileType -ne 0 -and $unixFileType -ne [uint32]0x8000
+                    $dosDirectory = ($attributeBits -band [uint32]0x10) -ne 0
+                    $dosReparsePoint = ($attributeBits -band [uint32]0x400) -ne 0
+                    if ($nonRegularUnixType -or $dosDirectory -or $dosReparsePoint) {
+                        throw "FarPilot ZIP contains a nonregular, directory, symlink, or reparse entry: $name"
+                    }
+                    if ([long]$entry.Length -le 0 -or [long]$entry.Length -gt $MaxZipEntryBytes) {
+                        throw "FarPilot ZIP entry exceeds the size limit: $name"
+                    }
+                    $aggregate += [long]$entry.Length
+                    if ($aggregate -gt $MaxZipAggregateBytes) { throw 'FarPilot ZIP exceeds the aggregate size limit' }
+                    $accepted[$canonicalName] = $entry
+                }
+                if (-not $accepted.ContainsKey('farpilot.exe') -or -not $accepted.ContainsKey('farpilot-host-runner.exe')) {
+                    throw 'FarPilot ZIP is missing a required executable'
+                }
+
+                New-Item -ItemType Directory -Path $Destination | Out-Null
+                $createdDestination = $true
+                foreach ($canonicalName in @('farpilot.exe', 'farpilot-host-runner.exe')) {
+                    $entry = $accepted[$canonicalName]
+                    $outputPath = Join-Path $Destination $canonicalName
+                    $entryInput = $entry.Open()
+                    try {
+                        $output = [IO.File]::Open($outputPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                        try {
+                            $buffer = [byte[]]::new(1MB)
+                            $written = [long]0
+                            while (($read = $entryInput.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                                $written += [long]$read
+                                if ($written -gt [long]$entry.Length -or $written -gt $MaxZipEntryBytes) {
+                                    throw "FarPilot ZIP entry expanded beyond its declared limit: $canonicalName"
+                                }
+                                $output.Write($buffer, 0, $read)
+                            }
+                            if ($written -ne [long]$entry.Length) {
+                                throw "FarPilot ZIP entry length changed during extraction: $canonicalName"
+                            }
+                            $output.Flush($true)
+                        } finally {
+                            $output.Dispose()
+                        }
+                    } finally {
+                        $entryInput.Dispose()
+                    }
+                }
+            } finally {
+                $archive.Dispose()
+            }
+        } finally {
+            $archiveFile.Dispose()
+        }
+        foreach ($required in @('farpilot.exe', 'farpilot-host-runner.exe')) {
+            $path = Join-Path $Destination $required
+            if (-not (Test-RegularFile $path)) { throw "FarPilot ZIP extracted an unsafe executable: $required" }
+        }
+    } catch {
+        if ($createdDestination -and (Test-RegularDirectory $Destination)) {
+            Remove-Item -LiteralPath $Destination -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+}
+
+function Get-FarPilotReleaseLayout {
+    param([string]$Path, [string]$Label = 'release')
+    if (-not (Test-RegularDirectory $Path)) { throw "FarPilot $Label is not a regular directory: $Path" }
+    $entries = @(Get-ChildItem -LiteralPath $Path -Force)
+    if ($entries.Count -eq 1 -and $entries[0].Name -ieq 'farpilot.exe' -and (Test-RegularFile $entries[0].FullName)) {
+        return [PSCustomObject]@{
+            Format = 'exe'
+            Cli = (Join-Path $Path 'farpilot.exe')
+            Runner = $null
+            FileNames = @('farpilot.exe')
+        }
+    }
+    if ($entries.Count -eq 2) {
+        $cli = Join-Path $Path 'farpilot.exe'
+        $runner = Join-Path $Path 'farpilot-host-runner.exe'
+        if ((Test-RegularFile $cli) -and (Test-RegularFile $runner) -and
+            @($entries | Where-Object { $_.Name -inotmatch '^farpilot(?:-host-runner)?\.exe$' }).Count -eq 0) {
+            return [PSCustomObject]@{
+                Format = 'zip'
+                Cli = $cli
+                Runner = $runner
+                FileNames = @('farpilot.exe', 'farpilot-host-runner.exe')
+            }
+        }
+    }
+    throw "FarPilot $Label has unexpected contents: $Path"
+}
+
+function Assert-FarPilotReleaseVersion {
+    param([object]$Layout, [string]$ExpectedVersion, [string]$Label)
+    Test-AuthenticodePolicy $Layout.Cli
+    $cliVersion = Get-ExecutableVersion $Layout.Cli
+    if ($cliVersion -cne $ExpectedVersion) { throw "$Label CLI version $cliVersion does not match $ExpectedVersion" }
+    if ($Layout.Format -ceq 'zip') {
+        Test-AuthenticodePolicy $Layout.Runner
+        $runnerVersion = Get-ExecutableVersion -Path $Layout.Runner -ProductName 'farpilot-host-runner'
+        if ($runnerVersion -cne $ExpectedVersion) { throw "$Label runner version $runnerVersion does not match $ExpectedVersion" }
+    }
+}
+
+function Compare-FarPilotReleaseContent {
+    param([object]$Expected, [object]$Actual)
+    if ($Expected.Format -cne $Actual.Format) { return $false }
+    foreach ($name in @($Expected.FileNames)) {
+        $expectedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path (Split-Path -Parent $Expected.Cli) $name)).Hash
+        $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path (Split-Path -Parent $Actual.Cli) $name)).Hash
+        if ($expectedHash -cne $actualHash) { return $false }
+    }
+    return $true
+}
+
+function Wait-FarPilotManagedHostOnline {
+    param([string]$RuntimeDir, [long]$NotBeforeMs, [int]$TimeoutMilliseconds = 30000)
+    if ($script:UseTestAdapters) {
+        $state = Read-TestState -Name 'online' -DefaultValue ([PSCustomObject]@{ Online = $true; RunnerOnline = $true; UpdatedAtMs = $NotBeforeMs })
+        $updatedAt = if ($null -ne $state.PSObject.Properties['UpdatedAtMs']) { [long]$state.UpdatedAtMs } else { 0 }
+        $runnerOnline = if ($null -ne $state.PSObject.Properties['RunnerOnline']) { [bool]$state.RunnerOnline } else { $false }
+        if ([bool]$state.Online -and $runnerOnline -and $updatedAt -ge $NotBeforeMs) { return }
+        throw 'Timed out waiting for FarPilot managed Host to report online'
+    }
+    $statusPath = Join-Path $RuntimeDir 'host-status.json'
+    $runnerStatusPath = Join-Path $RuntimeDir 'runner-status.json'
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if ((Test-RegularFile $statusPath) -and (Test-RegularFile $runnerStatusPath)) {
+            try {
+                $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
+                $runnerStatus = Get-Content -LiteralPath $runnerStatusPath -Raw | ConvertFrom-Json
+                $updatedAt = [long]$status.updated_at_ms
+                $runnerUpdatedAt = [long]$runnerStatus.updated_at_ms
+                $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                $hostFresh = $updatedAt -ge $NotBeforeMs -and $updatedAt -le ($now + 5000) -and $updatedAt -ge ($now - 120000)
+                $runnerFresh = $runnerUpdatedAt -ge $NotBeforeMs -and $runnerUpdatedAt -le ($now + 5000) -and $runnerUpdatedAt -ge ($now - 120000)
+                if ([string]$status.state -ceq 'online' -and $hostFresh -and
+                    [string]$runnerStatus.runner_state -ceq 'running_child' -and $runnerFresh) {
+                    return
+                }
+            } catch {
+                Write-Debug 'FarPilot status files are not yet readable; continuing bounded readiness polling'
+            }
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    throw 'Timed out waiting for FarPilot managed Host to report fresh online status'
 }
 
 function Invoke-CurlDownload {
@@ -231,8 +451,8 @@ function Get-ManifestPackage {
     }
     $asset = $assetProperty.Value
     Assert-ExactPropertySet -Value $asset -Expected @('url', 'sha256', 'format') -Label 'FarPilot Windows asset'
-    if ([string]$asset.format -cne 'exe') {
-        throw 'FarPilot Windows manifest asset must use exe format'
+    if ([string]$asset.format -cne 'zip') {
+        throw 'FarPilot Windows manifest asset must use zip format'
     }
     $sha = [string]$asset.sha256
     if ($sha -notmatch '^[0-9a-f]{64}$') {
@@ -250,10 +470,10 @@ function Get-ManifestPackage {
     $segments = @($uri.AbsolutePath.Trim('/').Split('/'))
     if ($segments.Count -ne 6 -or $segments[0] -cne $RepositoryOwner -or $segments[1] -cne $RepositoryName -or
         $segments[2] -cne 'releases' -or $segments[3] -cne 'download' -or
-        $segments[4] -cne "v$manifestVersion" -or $segments[5] -cne 'farpilot-windows-x86_64.exe') {
+        $segments[4] -cne "v$manifestVersion" -or $segments[5] -cne 'farpilot-windows-x86_64.zip') {
         throw 'FarPilot Windows manifest asset URL has an invalid Release path'
     }
-    return [PSCustomObject]@{ Version = $manifestVersion; Url = $url; Sha256 = $sha }
+    return [PSCustomObject]@{ Version = $manifestVersion; Url = $url; Sha256 = $sha; Format = 'zip' }
 }
 
 function Enter-InstallLock {
@@ -298,16 +518,7 @@ function Assert-ManagedReleaseTarget {
     if ($releaseName -notmatch '^([0-9]+\.[0-9]+\.[0-9]+)-x86_64-pc-windows-msvc$') {
         throw "FarPilot junction target has an invalid release name: $AliasPath -> $Target"
     }
-    $expectedVersion = $Matches[1]
-    $entries = @(Get-ChildItem -LiteralPath $Target -Force)
-    $executable = Join-Path $Target 'farpilot.exe'
-    if ($entries.Count -ne 1 -or $entries[0].Name -ine 'farpilot.exe' -or -not (Test-RegularFile $executable)) {
-        throw "FarPilot junction target is an incomplete managed release: $AliasPath -> $Target"
-    }
-    $reportedVersion = Get-ExecutableVersion $executable
-    if ($reportedVersion -cne $expectedVersion) {
-        throw "FarPilot junction target version does not match its directory: $AliasPath -> $Target"
-    }
+    Get-FarPilotReleaseLayout -Path $Target -Label 'junction target release' | Out-Null
 }
 
 function Get-JunctionState {
@@ -380,7 +591,7 @@ function Get-ManagedFarPilotProcessState {
     if ($script:UseTestAdapters) {
         return @(Read-TestState -Name 'processes' -DefaultValue @())
     }
-    return @(Get-CimInstance Win32_Process -Filter "Name = 'farpilot.exe'" -ErrorAction SilentlyContinue)
+    return @(Get-CimInstance Win32_Process -Filter "Name = 'farpilot.exe' OR Name = 'farpilot-host-runner.exe'" -ErrorAction SilentlyContinue)
 }
 
 function Test-JunctionReleaseReference {
@@ -401,10 +612,16 @@ function Invoke-ManagedFarPilotProcessStop {
     param(
         [object[]]$ProcessState,
         [string]$ReleasesDir,
-        [string[]]$ManagedAliases = @()
+        [string[]]$ManagedAliases = @(),
+        [int]$TimeoutMilliseconds = 5000
     )
     Invoke-TestFailure -Point 'DuringManagedProcessStop'
-    foreach ($process in @($ProcessState)) {
+    $ordered = @($ProcessState | Sort-Object -Property @(
+        @{ Expression = { if ([string]$_.Name -ieq 'farpilot.exe') { 0 } else { 1 } } },
+        @{ Expression = { if ($_.PSObject.Properties['ProcessId']) { [int]$_.ProcessId } else { [int]$_.Id } } }
+    ))
+    $stopOrder = 0
+    foreach ($process in $ordered) {
         $path = [string]$process.ExecutablePath
         $name = if ($process.PSObject.Properties['Name']) { [string]$process.Name } else { 'farpilot.exe' }
         $managed = -not [string]::IsNullOrWhiteSpace($path) -and (Test-PathInside -Path $path -Parent $ReleasesDir)
@@ -416,12 +633,52 @@ function Invoke-ManagedFarPilotProcessStop {
                 }
             }
         }
-        if ($name -ieq 'farpilot.exe' -and $managed) {
-            if ($script:UseTestAdapters) {
-                $process.Stopped = $true
-            } else {
-                Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+        if ($name -notin @('farpilot.exe', 'farpilot-host-runner.exe') -or -not $managed) { continue }
+
+        if ($script:UseTestAdapters) {
+            if ($null -ne $process.PSObject.Properties['Exited'] -and [bool]$process.Exited) { continue }
+            $currentName = if ($null -ne $process.PSObject.Properties['CurrentName']) { [string]$process.CurrentName } else { $name }
+            $currentPath = if ($null -ne $process.PSObject.Properties['CurrentExecutablePath']) { [string]$process.CurrentExecutablePath } else { $path }
+            if ($currentName -ine $name -or (Get-CanonicalPath $currentPath) -ine (Get-CanonicalPath $path)) {
+                throw "Managed FarPilot process identity changed before stop: $name"
             }
+            $stopOrder += 1
+            $process.Stopped = $true
+            $process | Add-Member -NotePropertyName StopOrder -NotePropertyValue $stopOrder -Force
+            if ($null -ne $process.PSObject.Properties['WaitTimedOut'] -and [bool]$process.WaitTimedOut) {
+                Write-TestState -Name 'processes' -Value @($ProcessState)
+                throw "Timed out waiting for managed FarPilot process to stop: $name"
+            }
+            continue
+        }
+
+        $processId = [int]$process.ProcessId
+        $current = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+        if ($null -eq $current) { continue }
+        if ([string]$current.Name -ine $name -or [string]::IsNullOrWhiteSpace([string]$current.ExecutablePath) -or
+            (Get-CanonicalPath ([string]$current.ExecutablePath)) -ine (Get-CanonicalPath $path)) {
+            throw "Managed FarPilot process identity changed before stop: PID $processId"
+        }
+        try {
+            Stop-Process -Id $processId -Force -ErrorAction Stop
+        } catch {
+            $afterFailure = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+            if ($null -eq $afterFailure) { continue }
+            throw
+        }
+        $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+        while ($true) {
+            $remaining = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+            if ($null -eq $remaining) { break }
+            if ([string]$remaining.Name -ine $name -or
+                [string]::IsNullOrWhiteSpace([string]$remaining.ExecutablePath) -or
+                (Get-CanonicalPath ([string]$remaining.ExecutablePath)) -ine (Get-CanonicalPath $path)) {
+                throw "Managed FarPilot PID was reused while waiting for stop: $processId"
+            }
+            if ([DateTime]::UtcNow -ge $deadline) {
+                throw "Timed out waiting for managed FarPilot process to stop: PID $processId"
+            }
+            Start-Sleep -Milliseconds 100
         }
     }
     if ($script:UseTestAdapters) {
@@ -436,6 +693,9 @@ function Get-FarPilotStartupTaskState {
             UserId = $null; RunLevel = $null; Definition = $null
         }
         $state = Read-TestState -Name 'task' -DefaultValue $missing
+        $triggerKind = if ($null -ne $state.PSObject.Properties['Trigger']) { [string]$state.Trigger } else { $null }
+        $triggerUserId = if ($null -ne $state.PSObject.Properties['TriggerUserId']) { [string]$state.TriggerUserId } else { $null }
+        $logonType = if ($null -ne $state.PSObject.Properties['LogonType']) { [string]$state.LogonType } else { $null }
         return [PSCustomObject]@{
             Exists = [bool]$state.Exists
             Running = [bool]$state.Running
@@ -443,6 +703,9 @@ function Get-FarPilotStartupTaskState {
             Arguments = [string]$state.Arguments
             UserId = [string]$state.UserId
             RunLevel = [string]$state.RunLevel
+            Trigger = $triggerKind
+            TriggerUserId = $triggerUserId
+            LogonType = $logonType
             Definition = $state
         }
     }
@@ -451,8 +714,11 @@ function Get-FarPilotStartupTaskState {
         return [PSCustomObject]@{ Exists = $false; Running = $false; Definition = $null }
     }
     $actions = @($task.Actions)
+    $triggers = @($task.Triggers)
     $executable = if ($actions.Count -eq 1) { [string]$actions[0].Execute } else { $null }
     $arguments = if ($actions.Count -eq 1) { [string]$actions[0].Arguments } else { $null }
+    $triggerKind = if ($triggers.Count -eq 1 -and
+        [string]$triggers[0].CimClass.CimClassName -ceq 'MSFT_TaskLogonTrigger') { 'AtLogOn' } else { 'Invalid' }
     return [PSCustomObject]@{
         Exists = $true
         Running = ($task.State -eq 'Running')
@@ -460,7 +726,36 @@ function Get-FarPilotStartupTaskState {
         Arguments = $arguments
         UserId = [string]$task.Principal.UserId
         RunLevel = [string]$task.Principal.RunLevel
+        Trigger = $triggerKind
+        TriggerUserId = if ($triggers.Count -eq 1) { [string]$triggers[0].UserId } else { $null }
+        LogonType = [string]$task.Principal.LogonType
         Definition = $task
+    }
+}
+
+function Assert-FarPilotStartupTaskState {
+    param([object]$State, [string]$VisibleBin = '')
+    if (-not $State.Exists) { return }
+    $executable = [string]$State.Executable
+    if ([string]::IsNullOrWhiteSpace($executable) -or -not [IO.Path]::IsPathRooted($executable)) {
+        throw 'Existing FarPilot task executable is missing or not absolute'
+    }
+    $leaf = Split-Path -Leaf $executable
+    $arguments = [string]$State.Arguments
+    $validLegacyTask = $leaf -ieq 'farpilot.exe' -and $arguments -ceq 'host start'
+    $validRunnerTask = $leaf -ieq 'farpilot-host-runner.exe' -and $arguments -ceq 'run'
+    if (-not ($validLegacyTask -or $validRunnerTask)) { throw 'Existing FarPilot task action is not managed' }
+    $currentSid = Get-FarPilotCurrentUserSid
+    $principalSid = Resolve-FarPilotAccountSid ([string]$State.UserId)
+    $triggerSid = Resolve-FarPilotAccountSid ([string]$State.TriggerUserId)
+    if ($principalSid -ine $currentSid -or $triggerSid -ine $currentSid -or
+        [string]$State.RunLevel -ine 'Limited' -or [string]$State.Trigger -cne 'AtLogOn' -or
+        [string]$State.LogonType -ine 'Interactive') {
+        throw 'Existing FarPilot task principal or trigger is not managed'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($VisibleBin)) {
+        $parent = Get-CanonicalPath (Split-Path -Parent $executable)
+        if ($parent -ine (Get-CanonicalPath $VisibleBin)) { throw 'Existing FarPilot task is outside the managed visible bin' }
     }
 }
 
@@ -477,42 +772,60 @@ function Invoke-FarPilotStartupTaskStop {
 }
 
 function Invoke-FarPilotStartupTaskUpdate {
-    param([string]$Executable, [object]$PreviousState, [bool]$CreateTask)
+    param([string]$Executable, [object]$PreviousState, [bool]$CreateTask, [bool]$StartTask)
     if (-not $CreateTask -and -not $PreviousState.Exists) { return }
+    $leaf = Split-Path -Leaf $Executable
+    if ($leaf -ieq 'farpilot-host-runner.exe') {
+        $arguments = 'run'
+    } elseif ($leaf -ieq 'farpilot.exe') {
+        $arguments = 'host start'
+    } else {
+        throw "Refusing unexpected FarPilot task executable: $Executable"
+    }
+    $currentUserSid = Get-FarPilotCurrentUserSid
     if ($script:UseTestAdapters) {
         $updated = [PSCustomObject]@{
             Exists = $true
             Running = $false
             Executable = $Executable
-            Arguments = 'host start'
-            UserId = $env:USERNAME
+            Arguments = $arguments
+            UserId = $currentUserSid
             RunLevel = 'Limited'
+            Trigger = 'AtLogOn'
+            TriggerUserId = $currentUserSid
+            LogonType = 'Interactive'
         }
         Write-TestState -Name 'task' -Value $updated
         Invoke-TestFailure -Point 'DuringTaskUpdate'
-        if ($PreviousState.Running) {
+        if ($StartTask) {
             Invoke-TestFailure -Point 'DuringTaskStart'
             $updated.Running = $true
             Write-TestState -Name 'task' -Value $updated
         }
         return
     }
-    $action = New-ScheduledTaskAction -Execute $Executable -Argument 'host start'
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+    $action = if ($leaf -ieq 'farpilot-host-runner.exe') {
+        New-ScheduledTaskAction -Execute $Executable -Argument 'run'
+    } else {
+        New-ScheduledTaskAction -Execute $Executable -Argument 'host start'
+    }
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUserSid
+    $principal = New-ScheduledTaskPrincipal -UserId $currentUserSid -LogonType Interactive -RunLevel Limited
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
     Invoke-TestFailure -Point 'DuringTaskUpdate'
-    if ($PreviousState.Running) {
+    if ($StartTask) {
         Invoke-TestFailure -Point 'DuringTaskStart'
         Start-ScheduledTask -TaskName $TaskName
     }
 }
 
 function Restore-FarPilotStartupTask {
-    param([object]$State)
+    param([object]$State, [bool]$StartTask)
     if ($script:UseTestAdapters) {
         if ($State.Exists) {
-            Write-TestState -Name 'task' -Value $State.Definition
+            $restored = $State.Definition | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+            $restored.Running = $StartTask
+            Write-TestState -Name 'task' -Value $restored
         } else {
             Write-TestState -Name 'task' -Value ([PSCustomObject]@{
                 Exists = $false; Running = $false; Executable = $null; Arguments = $null
@@ -529,7 +842,7 @@ function Restore-FarPilotStartupTask {
         return
     }
     Register-ScheduledTask -TaskName $TaskName -InputObject $State.Definition -Force | Out-Null
-    if ($State.Running) {
+    if ($StartTask) {
         Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
     } else {
         Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -720,15 +1033,13 @@ function Resolve-FarPilotUninstallBinDir {
     )
     if ($InstallState.Exists) {
         if (-not [string]::IsNullOrWhiteSpace($LegacyHint)) { throw 'InstallDir is unnecessary and forbidden when install-state metadata exists' }
+        Assert-FarPilotStartupTaskState -State $TaskState -VisibleBin ([string]$InstallState.VisibleBin)
         return [string]$InstallState.VisibleBin
     }
     if ($TaskState.Exists) {
         if (-not [string]::IsNullOrWhiteSpace($LegacyHint)) { throw 'InstallDir is forbidden when a managed FarPilot task identifies the visible bin' }
+        Assert-FarPilotStartupTaskState -State $TaskState
         $executable = [string]$TaskState.Executable
-        if ([string]::IsNullOrWhiteSpace($executable) -or (Split-Path -Leaf $executable) -ine 'farpilot.exe' -or
-            [string]$TaskState.Arguments -cne 'host start') {
-            throw 'Existing FarPilot task does not contain a valid managed executable path'
-        }
         $candidate = Get-CanonicalPath (Split-Path -Parent $executable)
         $state = Get-JunctionState -Path $candidate -ReleasesDir $ReleasesDir -AllowLegacyBinary $false
         if ($state.Kind -ne 'Junction') { throw 'Existing FarPilot task executable is not under a managed visible-bin junction' }
@@ -845,14 +1156,19 @@ function Assert-NoReparseTree {
 function Assert-FarPilotReleaseDirectoryShape {
     param([string]$Path, [string]$Kind)
     Assert-NoReparseTree -Path $Path -Label $Kind
-    $entries = @(Get-ChildItem -LiteralPath $Path -Force)
-    if ($entries.Count -ne 1 -or $entries[0].Name -ine 'farpilot.exe' -or -not (Test-RegularFile $entries[0].FullName)) {
-        throw "Refusing unexpected contents in $Kind directory: $Path"
-    }
+    Get-FarPilotReleaseLayout -Path $Path -Label $Kind | Out-Null
 }
 
 function Get-FarPilotUninstallDeletionPlan {
-    param([string]$Root, [string]$ReleasesDir, [string]$CurrentDir, [string]$BinDir, [string]$LockPath, [string]$InstallStatePath)
+    param(
+        [string]$Root,
+        [string]$ReleasesDir,
+        [string]$CurrentDir,
+        [string]$BinDir,
+        [string]$RuntimeDir,
+        [string]$LockPath,
+        [string]$InstallStatePath
+    )
     $aliases = @()
     foreach ($aliasSpec in @(
         [PSCustomObject]@{ Path = $CurrentDir; AllowLegacy = $false },
@@ -888,6 +1204,18 @@ function Get-FarPilotUninstallDeletionPlan {
         Assert-FarPilotReleaseDirectoryShape -Path $entry.FullName -Kind 'legacy backup'
         $legacyEntries += [string]$entry.FullName
     }
+    $runtimeTarget = $null
+    if (Test-Path -LiteralPath $RuntimeDir) {
+        Assert-SafeUninstallDirectory -Path $RuntimeDir -Root $Root -Label 'runtime directory'
+        $allowedRuntimeFiles = @('host-status.json', 'runner-status.json', 'host.log', 'host.log.1', 'host.log.2')
+        foreach ($entry in @(Get-ChildItem -LiteralPath $RuntimeDir -Force)) {
+            if ($entry.PSIsContainer -or ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+                -not (Test-RegularFile $entry.FullName) -or $entry.Name -notin $allowedRuntimeFiles) {
+                throw "Refusing unexpected runtime entry during uninstall: $($entry.FullName)"
+            }
+        }
+        $runtimeTarget = $RuntimeDir
+    }
     if (Test-Path -LiteralPath $LockPath) {
         if (-not (Test-RegularFile $LockPath) -or -not (Test-PathInside -Path $LockPath -Parent $Root)) {
             throw "Refusing unsafe install lock during uninstall: $LockPath"
@@ -905,6 +1233,7 @@ function Get-FarPilotUninstallDeletionPlan {
         ReleaseEntries = @($releaseEntries)
         LegacyEntries = @($legacyEntries)
         Metadata = @($metadata)
+        RuntimeDir = $runtimeTarget
         LockPath = $LockPath
         ReleasesDir = $ReleasesDir
     }
@@ -914,6 +1243,11 @@ function Invoke-FarPilotUninstallQuarantine {
     param([object]$Plan)
     $targets = @($Plan.Aliases)
     if (Test-Path -LiteralPath $Plan.ReleasesDir) { $targets += [string]$Plan.ReleasesDir }
+    if ($null -ne $Plan.PSObject.Properties['RuntimeDir'] -and
+        -not [string]::IsNullOrWhiteSpace([string]$Plan.RuntimeDir) -and
+        (Test-Path -LiteralPath $Plan.RuntimeDir)) {
+        $targets += [string]$Plan.RuntimeDir
+    }
     $targets += @($Plan.LegacyEntries)
     $targets += @($Plan.Metadata)
     if (Test-Path -LiteralPath $Plan.LockPath) { $targets += [string]$Plan.LockPath }
@@ -992,6 +1326,7 @@ function Invoke-FarPilotUninstall {
         [string]$ReleasesDir,
         [string]$CurrentDir,
         [string]$BinDir,
+        [string]$RuntimeDir,
         [string]$LockPath,
         [string]$InstallStatePath,
         [bool]$Purge,
@@ -1008,12 +1343,13 @@ function Invoke-FarPilotUninstall {
         return
     }
     if (-not (Test-RegularDirectory $Root)) { throw "Refusing unsafe FarPilot root during uninstall: $Root" }
-    Get-FarPilotUninstallDeletionPlan -Root $Root -ReleasesDir $ReleasesDir -CurrentDir $CurrentDir -BinDir $BinDir -LockPath $LockPath -InstallStatePath $InstallStatePath | Out-Null
+    Get-FarPilotUninstallDeletionPlan -Root $Root -ReleasesDir $ReleasesDir -CurrentDir $CurrentDir -BinDir $BinDir -RuntimeDir $RuntimeDir -LockPath $LockPath -InstallStatePath $InstallStatePath | Out-Null
     $taskState = Get-FarPilotStartupTaskState
+    Assert-FarPilotStartupTaskState -State $taskState -VisibleBin $BinDir
     $pathState = Get-UserPathState
     $processState = @(Get-ManagedFarPilotProcessState)
     $lock = Enter-InstallLock $LockPath
-    $deletionPlan = Get-FarPilotUninstallDeletionPlan -Root $Root -ReleasesDir $ReleasesDir -CurrentDir $CurrentDir -BinDir $BinDir -LockPath $LockPath -InstallStatePath $InstallStatePath
+    $deletionPlan = Get-FarPilotUninstallDeletionPlan -Root $Root -ReleasesDir $ReleasesDir -CurrentDir $CurrentDir -BinDir $BinDir -RuntimeDir $RuntimeDir -LockPath $LockPath -InstallStatePath $InstallStatePath
     $taskMutated = $false
     $pathMutated = $false
     $quarantined = @()
@@ -1032,8 +1368,8 @@ function Invoke-FarPilotUninstall {
             $failure = $_
             $restoreErrors = @(Restore-FarPilotUninstallQuarantine -Entries $quarantined)
             if ($pathMutated) { try { Restore-UserPath -State $pathState } catch { $restoreErrors += "PATH: $($_.Exception.Message)" } }
-            if ($taskMutated) { try { Restore-FarPilotStartupTask -State $taskState } catch { $restoreErrors += "task: $($_.Exception.Message)" } }
-            $remaining = @($CurrentDir, $BinDir, $ReleasesDir, $InstallStatePath) | Where-Object { Test-Path -LiteralPath $_ }
+            if ($taskMutated) { try { Restore-FarPilotStartupTask -State $taskState -StartTask ([bool]$taskState.Running) } catch { $restoreErrors += "task: $($_.Exception.Message)" } }
+            $remaining = @($CurrentDir, $BinDir, $ReleasesDir, $RuntimeDir, $InstallStatePath) | Where-Object { Test-Path -LiteralPath $_ }
             $message = "FarPilot uninstall transaction failed: $($failure.Exception.Message). Remaining managed paths: $($remaining -join ', ')"
             if ($restoreErrors.Count -ne 0) { $message += ". Restore errors: $($restoreErrors -join '; ')" }
             throw $message
@@ -1140,12 +1476,13 @@ if ($Uninstall) {
     $uninstallRoot = Get-CanonicalPath (Join-Path $env:LOCALAPPDATA 'FarPilot')
     $uninstallReleases = Join-Path $uninstallRoot 'releases'
     $uninstallCurrent = Join-Path $uninstallRoot 'current'
+    $uninstallRuntime = Join-Path $uninstallRoot 'runtime'
     $uninstallStatePath = Join-Path $uninstallRoot 'install-state.json'
     $uninstallState = Get-FarPilotInstallState -Path $uninstallStatePath -DefaultBinDir (Join-Path $uninstallRoot 'bin')
     $uninstallTaskEvidence = Get-FarPilotStartupTaskState
     $uninstallBin = Resolve-FarPilotUninstallBinDir -InstallState $uninstallState -TaskState $uninstallTaskEvidence -DefaultBinDir (Join-Path $uninstallRoot 'bin') -CurrentDir $uninstallCurrent -ReleasesDir $uninstallReleases -LegacyHint $InstallDir
     $uninstallLock = Join-Path $uninstallRoot 'install.lock'
-    Invoke-FarPilotUninstall -Root $uninstallRoot -ReleasesDir $uninstallReleases -CurrentDir $uninstallCurrent -BinDir $uninstallBin -LockPath $uninstallLock -InstallStatePath $uninstallStatePath -Purge ([bool]$PurgeState) -Preview ([bool]$DryRun)
+    Invoke-FarPilotUninstall -Root $uninstallRoot -ReleasesDir $uninstallReleases -CurrentDir $uninstallCurrent -BinDir $uninstallBin -RuntimeDir $uninstallRuntime -LockPath $uninstallLock -InstallStatePath $uninstallStatePath -Purge ([bool]$PurgeState) -Preview ([bool]$DryRun)
     return
 }
 $requestedVersion = Normalize-Version $Version
@@ -1157,7 +1494,17 @@ if ($localMode) {
     }
     $requestedVersion = $packageVersion
     if (-not (Test-RegularFile $LocalPackagePath)) { throw "Local FarPilot package is not a regular file: $LocalPackagePath" }
-    $package = [PSCustomObject]@{ Version = $packageVersion; Path = (Get-CanonicalPath $LocalPackagePath); Sha256 = $LocalPackageSha256; Url = $null }
+    $extension = [IO.Path]::GetExtension($LocalPackagePath).ToLowerInvariant()
+    $packageFormat = if ($extension -ceq '.zip') { 'zip' } elseif ($extension -ceq '.exe') { 'exe' } else {
+        throw "Local FarPilot package must be a .zip or legacy .exe file: $LocalPackagePath"
+    }
+    $package = [PSCustomObject]@{
+        Version = $packageVersion
+        Path = (Get-CanonicalPath $LocalPackagePath)
+        Sha256 = $LocalPackageSha256
+        Url = $null
+        Format = $packageFormat
+    }
     $sourceDescription = $package.Path
 } else {
     if ([string]::IsNullOrWhiteSpace($ManifestUrl)) {
@@ -1173,7 +1520,7 @@ if ($localMode) {
     }
     $manifest = Get-RemoteManifest $ManifestUrl
     $remote = Get-ManifestPackage -Manifest $manifest -RequestedVersion $requestedVersion
-    $package = [PSCustomObject]@{ Version = $remote.Version; Path = $null; Sha256 = $remote.Sha256; Url = $remote.Url }
+    $package = [PSCustomObject]@{ Version = $remote.Version; Path = $null; Sha256 = $remote.Sha256; Url = $remote.Url; Format = $remote.Format }
     $requestedVersion = $remote.Version
     $sourceDescription = $remote.Url
 }
@@ -1191,6 +1538,7 @@ if ($DryRun) {
 $Root = Get-CanonicalPath (Join-Path $env:LOCALAPPDATA 'FarPilot')
 $ReleasesDir = Join-Path $Root 'releases'
 $CurrentDir = Join-Path $Root 'current'
+$RuntimeDir = Join-Path $Root 'runtime'
 $BinDir = if ([string]::IsNullOrWhiteSpace($InstallDir)) { Join-Path $Root 'bin' } else { Get-CanonicalPath $InstallDir }
 $ReleaseName = "$requestedVersion-$TargetTriple"
 $ReleaseDir = Join-Path $ReleasesDir $ReleaseName
@@ -1207,40 +1555,56 @@ $stagingDir = Join-Path $ReleasesDir ('.staging.' + $ReleaseName + '.' + $PID)
 $taskState = [PSCustomObject]@{ Exists = $false; Running = $false; Definition = $null }
 try {
     New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
-    $download = if ($localMode) { $package.Path } else { Join-Path $tempDir 'farpilot.exe' }
+    $downloadName = if ($package.Format -ceq 'zip') { 'farpilot-windows-x86_64.zip' } else { 'farpilot.exe' }
+    $download = if ($localMode) { $package.Path } else { Join-Path $tempDir $downloadName }
     if (-not $localMode) { Invoke-CurlDownload -Uri $package.Url -Destination $download }
     Test-FileDigest -Path $download -Expected $package.Sha256
-    Test-AuthenticodePolicy $download
-    $reported = Get-ExecutableVersion $download
-    if ($reported -cne $requestedVersion) { throw "FarPilot binary version $reported does not match $requestedVersion" }
+
+    if (Test-Path -LiteralPath $stagingDir) { throw "Staging path already exists: $stagingDir" }
+    if ($package.Format -ceq 'zip') {
+        Expand-VerifiedFarPilotPackage -ArchivePath $download -Destination $stagingDir
+    } else {
+        New-Item -ItemType Directory -Path $stagingDir | Out-Null
+        Copy-Item -LiteralPath $download -Destination (Join-Path $stagingDir 'farpilot.exe')
+        Test-FileDigest -Path (Join-Path $stagingDir 'farpilot.exe') -Expected $package.Sha256
+    }
+    $stagedLayout = Get-FarPilotReleaseLayout -Path $stagingDir -Label 'staged release'
+    if ($stagedLayout.Format -cne $package.Format) { throw 'Staged FarPilot release format does not match the package format' }
+    Assert-FarPilotReleaseVersion -Layout $stagedLayout -ExpectedVersion $requestedVersion -Label 'Staged FarPilot release'
 
     $releaseExists = Test-Path -LiteralPath $ReleaseDir
     if ($releaseExists) {
-        if (-not (Test-RegularDirectory $ReleaseDir)) { throw "Existing FarPilot release path is unsafe: $ReleaseDir" }
-        $entries = @(Get-ChildItem -LiteralPath $ReleaseDir -Force)
-        if ($entries.Count -ne 1 -or $entries[0].Name -ine 'farpilot.exe' -or -not (Test-RegularFile $ReleaseExe)) {
-            throw "Existing FarPilot release is incomplete or unmanaged: $ReleaseDir"
+        $existingLayout = Get-FarPilotReleaseLayout -Path $ReleaseDir -Label 'existing release'
+        if (-not (Compare-FarPilotReleaseContent -Expected $stagedLayout -Actual $existingLayout)) {
+            throw 'Existing FarPilot release bytes differ from the verified package'
         }
-        Test-FileDigest -Path $ReleaseExe -Expected $package.Sha256
-        Test-AuthenticodePolicy $ReleaseExe
-        $existingVersion = Get-ExecutableVersion $ReleaseExe
-        if ($existingVersion -cne $requestedVersion) { throw "Existing release has wrong version: $existingVersion" }
-    } else {
-        if (Test-Path -LiteralPath $stagingDir) { throw "Staging path already exists: $stagingDir" }
-        New-Item -ItemType Directory -Path $stagingDir | Out-Null
-        Copy-Item -LiteralPath $download -Destination (Join-Path $stagingDir 'farpilot.exe')
-        $stagedExe = Join-Path $stagingDir 'farpilot.exe'
-        Test-FileDigest -Path $stagedExe -Expected $package.Sha256
-        Test-AuthenticodePolicy $stagedExe
-        if ((Get-ExecutableVersion $stagedExe) -cne $requestedVersion) { throw 'Staged FarPilot version changed during copy' }
+        Assert-FarPilotReleaseVersion -Layout $existingLayout -ExpectedVersion $requestedVersion -Label 'Existing FarPilot release'
     }
 
     # Capture every non-mutating rollback input before stopping the task or processes.
     $currentState = Get-JunctionState -Path $CurrentDir -ReleasesDir $ReleasesDir -AllowLegacyBinary $false
     $binState = Get-JunctionState -Path $BinDir -ReleasesDir $ReleasesDir -AllowLegacyBinary $true
     $taskState = Get-FarPilotStartupTaskState
+    Assert-FarPilotStartupTaskState -State $taskState -VisibleBin $BinDir
     $pathState = Get-UserPathState
     $processState = @(Get-ManagedFarPilotProcessState)
+    $managedProcessWasRunning = $false
+    foreach ($process in $processState) {
+        $processName = [string]$process.Name
+        $processPath = [string]$process.ExecutablePath
+        if ($processName -in @('farpilot.exe', 'farpilot-host-runner.exe') -and
+            -not [string]::IsNullOrWhiteSpace($processPath) -and
+            ((Test-PathInside -Path $processPath -Parent $ReleasesDir) -or
+             (Test-PathInside -Path $processPath -Parent $CurrentDir) -or
+             (Test-PathInside -Path $processPath -Parent $BinDir))) {
+            $managedProcessWasRunning = $true
+            break
+        }
+    }
+    if ($managedProcessWasRunning -and -not [bool]$taskState.Exists) {
+        throw 'Stop the foreground FarPilot Host before upgrading; its process-only mode cannot be restored safely'
+    }
+    $shouldStartManagedHost = [bool]$taskState.Running -or $managedProcessWasRunning
     $installState = Get-FarPilotInstallState -Path $InstallStatePath -DefaultBinDir (Join-Path $Root 'bin')
 
     $releaseCreated = $false
@@ -1249,6 +1613,7 @@ try {
     $binAttempted = $false
     $pathAttempted = $false
     $installStateAttempted = $false
+    $replacementStarted = $false
     try {
         $taskStopAttempted = $true
         Invoke-FarPilotStartupTaskStop $taskState
@@ -1265,17 +1630,35 @@ try {
         Invoke-TestFailure -Point 'AfterBinJunction'
         $pathAttempted = $true
         Invoke-UserPathUpdate -Entry $ReleaseDir -ReleasesDir $ReleasesDir -Aliases @($CurrentDir, $BinDir)
-        Invoke-FarPilotStartupTaskUpdate -Executable (Join-Path $BinDir 'farpilot.exe') -PreviousState $taskState -CreateTask (-not $NoStartupTask)
+        $taskExecutableName = if ($stagedLayout.Format -ceq 'zip') { 'farpilot-host-runner.exe' } else { 'farpilot.exe' }
+        $taskWillExist = (-not $NoStartupTask) -or [bool]$taskState.Exists
+        $startUpdatedTask = $shouldStartManagedHost -and $taskWillExist
+        $onlineNotBeforeMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        Invoke-FarPilotStartupTaskUpdate -Executable (Join-Path $BinDir $taskExecutableName) -PreviousState $taskState -CreateTask (-not $NoStartupTask) -StartTask $startUpdatedTask
+        $replacementStarted = $startUpdatedTask
         $installStateAttempted = $true
         Write-FarPilotInstallState -Path $InstallStatePath -VisibleBin $BinDir
+        if ($startUpdatedTask -and $stagedLayout.Format -ceq 'zip') {
+            Wait-FarPilotManagedHostOnline -RuntimeDir $RuntimeDir -NotBeforeMs $onlineNotBeforeMs
+        }
     } catch {
         $activationError = $_
         $rollbackErrors = @()
+        if ($replacementStarted) {
+            try {
+                $updatedTask = Get-FarPilotStartupTaskState
+                Invoke-FarPilotStartupTaskStop -State $updatedTask
+                $updatedProcesses = @(Get-ManagedFarPilotProcessState)
+                Invoke-ManagedFarPilotProcessStop -ProcessState $updatedProcesses -ReleasesDir $ReleasesDir -ManagedAliases @($BinDir, $CurrentDir)
+            } catch {
+                $rollbackErrors += "new managed Host stop: $($_.Exception.Message)"
+            }
+        }
         if ($installStateAttempted) {
             try { Restore-FarPilotInstallState -Path $InstallStatePath -State $installState } catch { $rollbackErrors += "install state: $($_.Exception.Message)" }
         }
         if ($taskStopAttempted) {
-            try { Restore-FarPilotStartupTask -State $taskState } catch { $rollbackErrors += "startup task: $($_.Exception.Message)" }
+            try { Restore-FarPilotStartupTask -State $taskState -StartTask $false } catch { $rollbackErrors += "startup task: $($_.Exception.Message)" }
         }
         if ($pathAttempted) {
             try { Restore-UserPath -State $pathState } catch { $rollbackErrors += "user PATH: $($_.Exception.Message)" }
@@ -1285,6 +1668,9 @@ try {
         }
         if ($currentAttempted) {
             try { Restore-ManagedJunction -Path $CurrentDir -State $currentState } catch { $rollbackErrors += "current junction: $($_.Exception.Message)" }
+        }
+        if ($taskStopAttempted -and [bool]$taskState.Running -and $rollbackErrors.Count -eq 0) {
+            try { Restore-FarPilotStartupTask -State $taskState -StartTask $true } catch { $rollbackErrors += "startup task restart: $($_.Exception.Message)" }
         }
         if ($releaseCreated -and $rollbackErrors.Count -eq 0 -and (Test-RegularDirectory $ReleaseDir)) {
             $releaseReferenced = (Test-JunctionReleaseReference -Path $CurrentDir -ReleaseDir $ReleaseDir) -or

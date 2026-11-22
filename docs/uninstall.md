@@ -36,10 +36,11 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
 Default uninstall removes only installer-owned executable state:
 
 - the managed `FarPilot Host` Scheduled Task;
-- FarPilot processes whose executable path is under the managed release root;
+- `farpilot.exe` and `farpilot-host-runner.exe` processes whose executable path is under a managed release, `current`, or visible `bin` path;
 - FarPilot-owned current-user PATH entries;
 - installer-owned `current` and visible `bin` junctions;
 - versioned release, staging, backup, lock, and install-state files;
+- the managed `runtime` directory when it contains only `host-status.json`, `runner-status.json`, and bounded `host.log*` files;
 - empty installer-owned program directories.
 
 It preserves by default:

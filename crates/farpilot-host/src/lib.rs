@@ -4,6 +4,7 @@ pub mod client;
 pub mod config;
 pub mod herdr;
 pub mod identity_store;
+pub mod managed_status;
 pub mod pty;
 pub mod reconnect;
 pub mod session;

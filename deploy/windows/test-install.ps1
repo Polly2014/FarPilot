@@ -1,11 +1,15 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+Add-Type -AssemblyName System.IO.Compression
 
 $Installer = Join-Path $PSScriptRoot 'install.ps1'
 $OriginalLocalAppData = $env:LOCALAPPDATA
 $PowerShellExe = (Get-Process -Id $PID).Path
 $TempRoot = Join-Path ([IO.Path]::GetTempPath()) ('farpilot-installer-test-' + [guid]::NewGuid().ToString('N'))
+$MaxZipEntryBytes = [long](64MB)
+$MaxZipAggregateBytes = [long](96MB)
+$TestCurrentUserSid = 'S-1-5-21-1000'
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
@@ -20,14 +24,26 @@ function Assert-Equal {
 }
 
 function Initialize-FarPilotFixture {
-    param([string]$Version, [string]$Destination, [string]$Marker = '')
+    param(
+        [string]$Version,
+        [string]$Destination,
+        [string]$Marker = '',
+        [string]$ProductName = 'farpilot',
+        [string]$VersionMarkerPath = ''
+    )
     $source = [IO.Path]::ChangeExtension($Destination, '.rs')
     $escaped = $Version.Replace('\', '\\').Replace('"', '\"')
     $escapedMarker = $Marker.Replace('\', '\\').Replace('"', '\"')
+    $escapedProductName = $ProductName.Replace('\', '\\').Replace('"', '\"')
+    $escapedVersionMarkerPath = $VersionMarkerPath.Replace('\', '\\').Replace('"', '\"')
     @"
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("--version") {
-        println!("farpilot $escaped");
+        let marker = "$escapedVersionMarkerPath";
+        if !marker.is_empty() {
+            std::fs::write(marker, "version-invoked").unwrap();
+        }
+        println!("$escapedProductName $escaped");
     } else {
         println!("fixture $escaped $escapedMarker");
     }
@@ -42,6 +58,60 @@ fn main() {
         throw "rustc reported success but FarPilot fixture $Version was not created at $Destination"
     }
     Remove-Item -LiteralPath $source -Force
+}
+
+function Initialize-TestZipPackage {
+    param(
+        [string]$Destination,
+        [object[]]$Entries
+    )
+    if (Test-Path -LiteralPath $Destination) {
+        Remove-Item -LiteralPath $Destination -Force
+    }
+    $file = [IO.File]::Open($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        $archive = [IO.Compression.ZipArchive]::new($file, [IO.Compression.ZipArchiveMode]::Create, $false)
+        try {
+            foreach ($entrySpec in $Entries) {
+                $entry = $archive.CreateEntry([string]$entrySpec.Name, [IO.Compression.CompressionLevel]::Optimal)
+                if ($null -ne $entrySpec.PSObject.Properties['ExternalAttributes']) {
+                    $entry.ExternalAttributes = [int]$entrySpec.ExternalAttributes
+                }
+                if ($null -ne $entrySpec.PSObject.Properties['Directory'] -and [bool]$entrySpec.Directory) {
+                    continue
+                }
+                $entryStream = $entry.Open()
+                try {
+                    if ($null -ne $entrySpec.PSObject.Properties['SourcePath']) {
+                        $sourceStream = [IO.File]::OpenRead([string]$entrySpec.SourcePath)
+                        try {
+                            $sourceStream.CopyTo($entryStream)
+                        } finally {
+                            $sourceStream.Dispose()
+                        }
+                    } elseif ($null -ne $entrySpec.PSObject.Properties['Size']) {
+                        $remaining = [long]$entrySpec.Size
+                        $buffer = [byte[]]::new(1MB)
+                        while ($remaining -gt 0) {
+                            $count = [int][Math]::Min([long]$buffer.Length, $remaining)
+                            $entryStream.Write($buffer, 0, $count)
+                            $remaining -= $count
+                        }
+                    } else {
+                        $bytes = [Text.Encoding]::UTF8.GetBytes([string]$entrySpec.Content)
+                        $entryStream.Write($bytes, 0, $bytes.Length)
+                    }
+                } finally {
+                    $entryStream.Dispose()
+                }
+            }
+        } finally {
+            $archive.Dispose()
+        }
+    } finally {
+        $file.Dispose()
+    }
+    return $Destination
 }
 
 function Initialize-TestState {
@@ -244,13 +314,17 @@ function Assert-PreMutationFailureState {
         [string]$ExpectedPathJson,
         [string]$ExpectedTaskJson,
         [string]$RejectedVersion,
-        [string]$Label
+        [string]$Label,
+        [string]$ExpectedProcessJson = ''
     )
     $root = Join-Path $Scenario 'FarPilot'
     Assert-Equal -Expected $ExpectedCurrent -Actual (Get-JunctionTarget (Join-Path $root 'current')) -Message "$Label changed current"
     Assert-Equal -Expected $ExpectedBin -Actual (Get-JunctionTarget (Join-Path $root 'bin')) -Message "$Label changed bin"
     Assert-Equal -Expected $ExpectedPathJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $Scenario) 'path.json') -Raw) -Message "$Label changed PATH"
     Assert-Equal -Expected $ExpectedTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $Scenario) 'task.json') -Raw) -Message "$Label changed task"
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedProcessJson)) {
+        Assert-Equal -Expected $ExpectedProcessJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $Scenario) 'processes.json') -Raw) -Message "$Label changed processes"
+    }
     Assert-Equal -Expected 'identity-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $root 'host-identity.json') -Raw).Trim() -Message "$Label changed identity"
     Assert-Equal -Expected 'config-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $root 'host.json') -Raw).Trim() -Message "$Label changed config"
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $root "releases\$RejectedVersion-x86_64-pc-windows-msvc"))) "$Label left a new release"
@@ -271,6 +345,167 @@ try {
     }
     $alternateSameVersion = Join-Path $fixtures 'farpilot-0.2.0-alternate.exe'
     Initialize-FarPilotFixture -Version '0.2.0' -Destination $alternateSameVersion -Marker 'alternate-build'
+
+    # ZIP packages must contain exactly the CLI and runner and must fail before mutation when malformed.
+    $zipRunner = Join-Path $fixtures 'farpilot-host-runner-0.2.1.exe'
+    Initialize-FarPilotFixture -Version '0.2.1' -Destination $zipRunner -ProductName 'farpilot-host-runner'
+    $mismatchedZipRunner = Join-Path $fixtures 'farpilot-host-runner-0.2.2.exe'
+    Initialize-FarPilotFixture -Version '0.2.2' -Destination $mismatchedZipRunner -ProductName 'farpilot-host-runner'
+    $zipCli = $packages['0.2.1']
+    $validZip = Join-Path $fixtures 'farpilot-windows-x86_64.zip'
+    $validEntries = @(
+        [PSCustomObject]@{ Name = 'farpilot.exe'; SourcePath = $zipCli },
+        [PSCustomObject]@{ Name = 'farpilot-host-runner.exe'; SourcePath = $zipRunner }
+    )
+    $null = Initialize-TestZipPackage -Destination $validZip -Entries $validEntries
+
+    $invalidZips = [ordered]@{}
+    $invalidZips['missing runner'] = Join-Path $fixtures 'missing-runner.zip'
+    $null = Initialize-TestZipPackage -Destination $invalidZips['missing runner'] -Entries @(
+        [PSCustomObject]@{ Name = 'farpilot.exe'; SourcePath = $zipCli }
+    )
+    $invalidZips['missing CLI'] = Join-Path $fixtures 'missing-cli.zip'
+    $null = Initialize-TestZipPackage -Destination $invalidZips['missing CLI'] -Entries @(
+        [PSCustomObject]@{ Name = 'farpilot-host-runner.exe'; SourcePath = $zipRunner }
+    )
+    $invalidZips['extra file'] = Join-Path $fixtures 'extra-file.zip'
+    $null = Initialize-TestZipPackage -Destination $invalidZips['extra file'] -Entries @(
+        $validEntries[0],
+        $validEntries[1],
+        [PSCustomObject]@{ Name = 'unexpected.txt'; Content = 'unexpected' }
+    )
+    $invalidZips['directory entry'] = Join-Path $fixtures 'directory-entry.zip'
+    $null = Initialize-TestZipPackage -Destination $invalidZips['directory entry'] -Entries @(
+        $validEntries[0],
+        $validEntries[1],
+        [PSCustomObject]@{ Name = 'nested/'; Directory = $true }
+    )
+    $invalidZips['parent traversal'] = Join-Path $fixtures 'parent-traversal.zip'
+    $null = Initialize-TestZipPackage -Destination $invalidZips['parent traversal'] -Entries @(
+        [PSCustomObject]@{ Name = '../farpilot.exe'; SourcePath = $zipCli },
+        $validEntries[1]
+    )
+    $invalidZips['absolute path'] = Join-Path $fixtures 'absolute-path.zip'
+    $null = Initialize-TestZipPackage -Destination $invalidZips['absolute path'] -Entries @(
+        [PSCustomObject]@{ Name = '/farpilot.exe'; SourcePath = $zipCli },
+        $validEntries[1]
+    )
+    $invalidZips['drive-qualified path'] = Join-Path $fixtures 'drive-qualified-path.zip'
+    $null = Initialize-TestZipPackage -Destination $invalidZips['drive-qualified path'] -Entries @(
+        [PSCustomObject]@{ Name = 'C:\farpilot.exe'; SourcePath = $zipCli },
+        $validEntries[1]
+    )
+    $invalidZips['nested path'] = Join-Path $fixtures 'nested-path.zip'
+    $null = Initialize-TestZipPackage -Destination $invalidZips['nested path'] -Entries @(
+        [PSCustomObject]@{ Name = 'nested/farpilot.exe'; SourcePath = $zipCli },
+        $validEntries[1]
+    )
+    $invalidZips['case-insensitive duplicate'] = Join-Path $fixtures 'case-duplicate.zip'
+    $null = Initialize-TestZipPackage -Destination $invalidZips['case-insensitive duplicate'] -Entries @(
+        $validEntries[0],
+        [PSCustomObject]@{ Name = 'FARPILOT.EXE'; SourcePath = $zipCli },
+        $validEntries[1]
+    )
+    $unixSymlinkAttributes = [BitConverter]::ToInt32([BitConverter]::GetBytes([uint32]2717843456), 0)
+    $invalidZips['symlink external attributes'] = Join-Path $fixtures 'symlink-attributes.zip'
+    $null = Initialize-TestZipPackage -Destination $invalidZips['symlink external attributes'] -Entries @(
+        [PSCustomObject]@{ Name = 'farpilot.exe'; SourcePath = $zipCli; ExternalAttributes = $unixSymlinkAttributes },
+        $validEntries[1]
+    )
+    $invalidZips['reparse external attributes'] = Join-Path $fixtures 'reparse-attributes.zip'
+    $null = Initialize-TestZipPackage -Destination $invalidZips['reparse external attributes'] -Entries @(
+        [PSCustomObject]@{ Name = 'farpilot.exe'; SourcePath = $zipCli; ExternalAttributes = [int][IO.FileAttributes]::ReparsePoint },
+        $validEntries[1]
+    )
+    $invalidZips['Unix directory external attributes'] = Join-Path $fixtures 'unix-directory-attributes.zip'
+    $null = Initialize-TestZipPackage -Destination $invalidZips['Unix directory external attributes'] -Entries @(
+        [PSCustomObject]@{ Name = 'farpilot.exe'; SourcePath = $zipCli; ExternalAttributes = 1107230720 },
+        $validEntries[1]
+    )
+    $invalidZips['DOS directory external attributes'] = Join-Path $fixtures 'dos-directory-attributes.zip'
+    $null = Initialize-TestZipPackage -Destination $invalidZips['DOS directory external attributes'] -Entries @(
+        [PSCustomObject]@{ Name = 'farpilot.exe'; SourcePath = $zipCli; ExternalAttributes = [int][IO.FileAttributes]::Directory },
+        $validEntries[1]
+    )
+    $invalidZips['Unix nonregular external attributes'] = Join-Path $fixtures 'unix-nonregular-attributes.zip'
+    $null = Initialize-TestZipPackage -Destination $invalidZips['Unix nonregular external attributes'] -Entries @(
+        [PSCustomObject]@{ Name = 'farpilot.exe'; SourcePath = $zipCli; ExternalAttributes = 570359808 },
+        $validEntries[1]
+    )
+    $invalidZips['oversized entry'] = Join-Path $fixtures 'oversized-entry.zip'
+    $null = Initialize-TestZipPackage -Destination $invalidZips['oversized entry'] -Entries @(
+        [PSCustomObject]@{ Name = 'farpilot.exe'; Size = ($MaxZipEntryBytes + 1) },
+        $validEntries[1]
+    )
+    $invalidZips['oversized aggregate'] = Join-Path $fixtures 'oversized-aggregate.zip'
+    $aggregateEntryBytes = [long]($MaxZipAggregateBytes / 2) + 1
+    $null = Initialize-TestZipPackage -Destination $invalidZips['oversized aggregate'] -Entries @(
+        [PSCustomObject]@{ Name = 'farpilot.exe'; Size = $aggregateEntryBytes },
+        [PSCustomObject]@{ Name = 'farpilot-host-runner.exe'; Size = $aggregateEntryBytes }
+    )
+    $invalidZips['binary version mismatch'] = Join-Path $fixtures 'version-mismatch.zip'
+    $null = Initialize-TestZipPackage -Destination $invalidZips['binary version mismatch'] -Entries @(
+        $validEntries[0],
+        [PSCustomObject]@{ Name = 'farpilot-host-runner.exe'; SourcePath = $mismatchedZipRunner }
+    )
+    $zipRejection = Initialize-ScenarioRoot 'zip-rejection'
+    Install-Fixture -Scenario $zipRejection -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
+    $zipRejectionRoot = Join-Path $zipRejection 'FarPilot'
+    'identity-sentinel' | Set-Content -LiteralPath (Join-Path $zipRejectionRoot 'host-identity.json')
+    'config-sentinel' | Set-Content -LiteralPath (Join-Path $zipRejectionRoot 'host.json')
+    $zipTask = Get-TestState -LocalAppData $zipRejection -Name 'task'
+    $zipTask.Running = $true
+    Write-TestStateFile -LocalAppData $zipRejection -Name 'task' -Value $zipTask
+    Write-TestStateFile -LocalAppData $zipRejection -Name 'processes' -Value @(
+        [PSCustomObject]@{ Id = 91; Name = 'farpilot.exe'; ExecutablePath = "$zipRejectionRoot\current\farpilot.exe"; Stopped = $false },
+        [PSCustomObject]@{ Id = 92; Name = 'farpilot.exe'; ExecutablePath = 'C:\External\farpilot.exe'; Stopped = $false },
+        [PSCustomObject]@{ Id = 93; Name = 'farpilot-host-runner.exe'; ExecutablePath = "$zipRejectionRoot\current\farpilot-host-runner.exe"; Stopped = $false },
+        [PSCustomObject]@{ Id = 94; Name = 'farpilot-host-runner.exe'; ExecutablePath = 'C:\External\farpilot-host-runner.exe'; Stopped = $false }
+    )
+    $zipCurrent = Get-JunctionTarget (Join-Path $zipRejectionRoot 'current')
+    $zipBin = Get-JunctionTarget (Join-Path $zipRejectionRoot 'bin')
+    $zipActiveDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $zipCurrent 'farpilot.exe')).Hash
+    $zipPathJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $zipRejection) 'path.json') -Raw
+    $zipTaskJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $zipRejection) 'task.json') -Raw
+    $zipProcessJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $zipRejection) 'processes.json') -Raw
+    foreach ($invalidZip in $invalidZips.GetEnumerator()) {
+        $invalidSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $invalidZip.Value).Hash.ToLowerInvariant()
+        $invalidResult = Invoke-InstallerProcess -LocalAppData $zipRejection -PackagePath $invalidZip.Value -Version '0.2.1' -Sha256 $invalidSha -EnableStartupTask
+        Assert-True ($invalidResult.ExitCode -ne 0) "$($invalidZip.Key) ZIP unexpectedly succeeded"
+        Assert-PreMutationFailureState -Scenario $zipRejection -ExpectedCurrent $zipCurrent -ExpectedBin $zipBin -ExpectedPathJson $zipPathJson -ExpectedTaskJson $zipTaskJson -ExpectedProcessJson $zipProcessJson -RejectedVersion '0.2.1' -Label "$($invalidZip.Key) ZIP"
+        Assert-Equal -Expected $zipActiveDigest -Actual (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $zipCurrent 'farpilot.exe')).Hash -Message "$($invalidZip.Key) ZIP changed the active release"
+    }
+
+    # RED: the legacy installer cannot yet activate the approved exact-two-file ZIP package.
+    $zipInstall = Initialize-ScenarioRoot 'zip-valid'
+    $validZipSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $validZip).Hash.ToLowerInvariant()
+    $validZipResult = Invoke-InstallerProcess -LocalAppData $zipInstall -PackagePath $validZip -Version '0.2.1' -Sha256 $validZipSha
+    Assert-Equal -Expected 0 -Actual $validZipResult.ExitCode -Message "exact-two-file ZIP install failed: $($validZipResult.Output)"
+    $zipRelease = Join-Path $zipInstall 'FarPilot\releases\0.2.1-x86_64-pc-windows-msvc'
+    Assert-True (Test-Path -LiteralPath (Join-Path $zipRelease 'farpilot.exe') -PathType Leaf) 'ZIP install omitted farpilot.exe'
+    Assert-True (Test-Path -LiteralPath (Join-Path $zipRelease 'farpilot-host-runner.exe') -PathType Leaf) 'ZIP install omitted farpilot-host-runner.exe'
+
+    # Existing release bytes must match the verified package before either executable is invoked.
+    $tamperedCliScenario = Initialize-ScenarioRoot 'existing-cli-preflight'
+    Install-Fixture -Scenario $tamperedCliScenario -Package $packages['0.2.0'] -Version '0.2.0' | Out-Null
+    $tamperedCliRoot = Join-Path $tamperedCliScenario 'FarPilot'
+    $tamperedCliRelease = Get-JunctionTarget (Join-Path $tamperedCliRoot 'current')
+    $tamperedCliMarker = Join-Path $tamperedCliScenario 'tampered-cli-version-marker.txt'
+    $tamperedCliFixture = Join-Path $fixtures 'tampered-farpilot-0.2.0.exe'
+    Initialize-FarPilotFixture -Version '0.2.0' -Destination $tamperedCliFixture -Marker 'tampered-cli' -VersionMarkerPath $tamperedCliMarker
+    Copy-Item -LiteralPath $tamperedCliFixture -Destination (Join-Path $tamperedCliRelease 'farpilot.exe') -Force
+    $trustedCliSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $packages['0.2.0']).Hash.ToLowerInvariant()
+    $tamperedCliResult = Invoke-InstallerProcess -LocalAppData $tamperedCliScenario -PackagePath $packages['0.2.0'] -Version '0.2.0' -Sha256 $trustedCliSha
+    Assert-True ($tamperedCliResult.ExitCode -ne 0) 'tampered existing CLI unexpectedly matched the verified package'
+    Assert-True (-not (Test-Path -LiteralPath $tamperedCliMarker)) 'tampered existing CLI executed before byte comparison'
+
+    $tamperedRunnerMarker = Join-Path $zipInstall 'tampered-runner-version-marker.txt'
+    $tamperedRunnerFixture = Join-Path $fixtures 'tampered-farpilot-host-runner-0.2.1.exe'
+    Initialize-FarPilotFixture -Version '0.2.1' -Destination $tamperedRunnerFixture -Marker 'tampered-runner' -ProductName 'farpilot-host-runner' -VersionMarkerPath $tamperedRunnerMarker
+    Copy-Item -LiteralPath $tamperedRunnerFixture -Destination (Join-Path $zipRelease 'farpilot-host-runner.exe') -Force
+    $tamperedRunnerResult = Invoke-InstallerProcess -LocalAppData $zipInstall -PackagePath $validZip -Version '0.2.1' -Sha256 $validZipSha
+    Assert-True ($tamperedRunnerResult.ExitCode -ne 0) 'tampered existing runner unexpectedly matched the verified package'
+    Assert-True (-not (Test-Path -LiteralPath $tamperedRunnerMarker)) 'tampered existing runner executed before byte comparison'
 
     # Fresh install creates a versioned release and managed junctions.
     $fresh = Initialize-ScenarioRoot 'fresh'
@@ -318,10 +553,11 @@ try {
     Copy-Item -LiteralPath $packages['0.2.0'] -Destination (Join-Path $legacyBin 'farpilot.exe')
     'identity-sentinel' | Set-Content -LiteralPath (Join-Path $legacyRoot 'host-identity.json')
     'config-sentinel' | Set-Content -LiteralPath (Join-Path $legacyRoot 'host.json')
-    Install-Fixture -Scenario $legacy -Package $packages['0.2.1'] -Version '0.2.1' | Out-Null
+    Install-Fixture -Scenario $legacy -Package $validZip -Version '0.2.1' | Out-Null
     Assert-Equal -Expected 'identity-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $legacyRoot 'host-identity.json') -Raw).Trim() -Message 'identity changed during migration'
     Assert-Equal -Expected 'config-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $legacyRoot 'host.json') -Raw).Trim() -Message 'config changed during migration'
     Assert-True (((Get-Item -LiteralPath $legacyBin -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) 'legacy bin was not converted to a managed junction'
+    Assert-True (Test-Path -LiteralPath (Join-Path $legacyBin 'farpilot-host-runner.exe') -PathType Leaf) 'legacy migration did not activate the runner'
 
     # Unmanaged nonempty bin directories are refused and preserved.
     $unmanaged = Initialize-ScenarioRoot 'unmanaged'
@@ -436,21 +672,31 @@ try {
     # Test adapters prove PATH, process, and Scheduled Task behavior without real machine mutation.
     $adapter = Initialize-ScenarioRoot 'behavior-adapters'
     $adapterRoot = Join-Path $adapter 'FarPilot'
-    $adapterRelease = Join-Path $adapterRoot 'releases\0.2.0-x86_64-pc-windows-msvc'
+    $adapterRelease = Join-Path $adapterRoot 'releases\0.2.1-x86_64-pc-windows-msvc'
     Write-TestStateFile -LocalAppData $adapter -Name 'path' -Value ([PSCustomObject]@{
         Exists = $true
         Value = "C:\Unrelated;$adapterRoot\releases\0.1.0-x86_64-pc-windows-msvc;$adapterRoot\bin"
         Kind = 'String'
         ProcessValue = "C:\Unrelated;$adapterRoot\current"
     })
+    Write-TestStateFile -LocalAppData $adapter -Name 'task' -Value ([PSCustomObject]@{
+        Exists = $true; Running = $true; Executable = "$adapterRoot\bin\farpilot.exe"; Arguments = 'host start'
+        UserId = $TestCurrentUserSid; RunLevel = 'Limited'; Trigger = 'AtLogOn'
+        TriggerUserId = $TestCurrentUserSid; LogonType = 'Interactive'
+    })
     Write-TestStateFile -LocalAppData $adapter -Name 'processes' -Value @(
-        [PSCustomObject]@{ Id = 101; Name = 'farpilot.exe'; ExecutablePath = "$adapterRoot\releases\0.1.0-x86_64-pc-windows-msvc\farpilot.exe"; Stopped = $false },
+        [PSCustomObject]@{ Id = 101; Name = 'farpilot.exe'; ExecutablePath = "$adapterRoot\releases\0.1.0-x86_64-pc-windows-msvc\farpilot.exe"; Stopped = $false; StopOrder = 0 },
         [PSCustomObject]@{ Id = 102; Name = 'farpilot.exe'; ExecutablePath = 'C:\External\farpilot.exe'; Stopped = $false },
         [PSCustomObject]@{ Id = 103; Name = 'other.exe'; ExecutablePath = "$adapterRoot\releases\0.1.0-x86_64-pc-windows-msvc\other.exe"; Stopped = $false },
         [PSCustomObject]@{ Id = 104; Name = 'farpilot.exe'; ExecutablePath = "$adapterRoot\bin\farpilot.exe"; Stopped = $false },
-        [PSCustomObject]@{ Id = 105; Name = 'farpilot.exe'; ExecutablePath = "$adapterRoot\current\farpilot.exe"; Stopped = $false }
+        [PSCustomObject]@{ Id = 105; Name = 'farpilot.exe'; ExecutablePath = "$adapterRoot\current\farpilot.exe"; Stopped = $false },
+        [PSCustomObject]@{ Id = 106; Name = 'farpilot-host-runner.exe'; ExecutablePath = "$adapterRoot\releases\0.1.0-x86_64-pc-windows-msvc\farpilot-host-runner.exe"; Stopped = $false; StopOrder = 0 },
+        [PSCustomObject]@{ Id = 107; Name = 'farpilot-host-runner.exe'; ExecutablePath = 'C:\External\farpilot-host-runner.exe'; Stopped = $false },
+        [PSCustomObject]@{ Id = 108; Name = 'farpilot-host-runner.exe'; ExecutablePath = "$adapterRoot\bin\farpilot-host-runner.exe"; Stopped = $false },
+        [PSCustomObject]@{ Id = 109; Name = 'farpilot-host-runner.exe'; ExecutablePath = "$adapterRoot\current\farpilot-host-runner.exe"; Stopped = $false },
+        [PSCustomObject]@{ Id = 110; Name = 'farpilot.exe'; ExecutablePath = "$adapterRoot\releases\0.1.0-x86_64-pc-windows-msvc\farpilot.exe"; Stopped = $false; Exited = $true }
     )
-    Install-Fixture -Scenario $adapter -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
+    Install-Fixture -Scenario $adapter -Package $validZip -Version '0.2.1' -EnableStartupTask | Out-Null
     $pathState = Get-TestState -LocalAppData $adapter -Name 'path'
     $pathParts = @([string]$pathState.Value -split ';')
     Assert-Equal -Expected ([IO.Path]::GetFullPath($adapterRelease).TrimEnd('\')) -Actual $pathParts[0] -Message 'active release is not first on PATH'
@@ -458,34 +704,135 @@ try {
     Assert-True (-not (($pathParts -join ';') -match '0\.1\.0-x86_64')) 'stale managed release remained on PATH'
     Assert-True (-not ($pathParts -contains "$adapterRoot\bin")) 'managed bin alias remained on PATH'
     $pathBeforeReinstall = Get-Content -LiteralPath (Join-Path (Initialize-TestState $adapter) 'path.json') -Raw
-    Install-Fixture -Scenario $adapter -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
+    Install-Fixture -Scenario $adapter -Package $validZip -Version '0.2.1' -EnableStartupTask | Out-Null
     Assert-Equal -Expected $pathBeforeReinstall -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $adapter) 'path.json') -Raw) -Message 'PATH update was not idempotent'
     $processState = @(Get-TestState -LocalAppData $adapter -Name 'processes')
     Assert-True ([bool]$processState[0].Stopped) 'managed FarPilot process was not stopped'
     Assert-True (-not [bool]$processState[1].Stopped) 'external same-name process was stopped'
     Assert-True (-not [bool]$processState[2].Stopped) 'non-FarPilot process was stopped'
-    Assert-True ([bool]$processState[3].Stopped) 'managed bin alias process was not stopped'
-    Assert-True ([bool]$processState[4].Stopped) 'managed current alias process was not stopped'
+    Assert-True ([bool]$processState[3].Stopped) 'managed bin alias CLI process was not stopped'
+    Assert-True ([bool]$processState[4].Stopped) 'managed current alias CLI process was not stopped'
+    Assert-True ([bool]$processState[5].Stopped) 'managed release runner process was not stopped'
+    Assert-True (-not [bool]$processState[6].Stopped) 'external same-name runner process was stopped'
+    Assert-True ([bool]$processState[7].Stopped) 'managed bin alias runner process was not stopped'
+    Assert-True ([bool]$processState[8].Stopped) 'managed current alias runner process was not stopped'
+    Assert-True ([int]$processState[0].StopOrder -gt 0) 'managed CLI stop order was not recorded'
+    Assert-True ([int]$processState[5].StopOrder -gt [int]$processState[0].StopOrder) 'runner stopped before managed CLI child'
+    Assert-True (-not [bool]$processState[9].Stopped) 'already-exited managed CLI was stopped again'
     $taskState = Get-TestState -LocalAppData $adapter -Name 'task'
     Assert-True ([bool]$taskState.Exists) 'default fresh install did not create startup task'
-    Assert-Equal -Expected (Join-Path $adapterRoot 'bin\farpilot.exe') -Actual ([string]$taskState.Executable) -Message 'startup task executable is wrong'
-    Assert-Equal -Expected 'host start' -Actual ([string]$taskState.Arguments) -Message 'startup task arguments are wrong'
+    Assert-Equal -Expected (Join-Path $adapterRoot 'bin\farpilot-host-runner.exe') -Actual ([string]$taskState.Executable) -Message 'startup task executable is not the runner'
+    Assert-Equal -Expected 'run' -Actual ([string]$taskState.Arguments) -Message 'startup task arguments are not fixed to run'
+    Assert-Equal -Expected $TestCurrentUserSid -Actual ([string]$taskState.UserId) -Message 'startup task user is not the current user SID'
     Assert-Equal -Expected 'Limited' -Actual ([string]$taskState.RunLevel) -Message 'startup task run level is not limited'
+    Assert-True ($null -ne $taskState.PSObject.Properties['Trigger']) 'startup task trigger was not recorded'
+    Assert-Equal -Expected 'AtLogOn' -Actual ([string]$taskState.Trigger) -Message 'startup task trigger is not AtLogOn'
+    Assert-True ($null -ne $taskState.PSObject.Properties['TriggerUserId']) 'startup task trigger user was not recorded'
+    Assert-Equal -Expected $TestCurrentUserSid -Actual ([string]$taskState.TriggerUserId) -Message 'startup task trigger user is not current user SID'
+    Assert-True ($null -ne $taskState.PSObject.Properties['LogonType']) 'startup task logon type was not recorded'
+    Assert-Equal -Expected 'Interactive' -Actual ([string]$taskState.LogonType) -Message 'startup task logon type is not Interactive'
+
+    # PID reuse/path mismatch and bounded stop timeout fail before activation.
+    foreach ($processRaceCase in @('pid-path-mismatch', 'stop-timeout')) {
+        $processRaceScenario = Initialize-ScenarioRoot ("process-race-" + $processRaceCase)
+        Install-Fixture -Scenario $processRaceScenario -Package $packages['0.2.0'] -Version '0.2.0' | Out-Null
+        $processRaceRoot = Join-Path $processRaceScenario 'FarPilot'
+        $processRaceCurrent = Get-JunctionTarget (Join-Path $processRaceRoot 'current')
+        $processRecord = [PSCustomObject]@{
+            Id = 151
+            Name = 'farpilot.exe'
+            ExecutablePath = (Join-Path $processRaceCurrent 'farpilot.exe')
+            Stopped = $false
+        }
+        if ($processRaceCase -ceq 'pid-path-mismatch') {
+            $processRecord | Add-Member -NotePropertyName CurrentName -NotePropertyValue 'other.exe'
+            $processRecord | Add-Member -NotePropertyName CurrentExecutablePath -NotePropertyValue 'C:\External\other.exe'
+        } else {
+            $processRecord | Add-Member -NotePropertyName WaitTimedOut -NotePropertyValue $true
+        }
+        Write-TestStateFile -LocalAppData $processRaceScenario -Name 'processes' -Value @($processRecord)
+        $processRaceResult = Invoke-InstallerProcess -LocalAppData $processRaceScenario -PackagePath $validZip -Version '0.2.1' -Sha256 $validZipSha
+        Assert-True ($processRaceResult.ExitCode -ne 0) "$processRaceCase unexpectedly activated"
+        Assert-Equal -Expected $processRaceCurrent -Actual (Get-JunctionTarget (Join-Path $processRaceRoot 'current')) -Message "$processRaceCase changed current"
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $processRaceRoot 'releases\0.2.1-x86_64-pc-windows-msvc'))) "$processRaceCase left new release"
+    }
+
+    $foregroundOnly = Initialize-ScenarioRoot 'foreground-only-upgrade'
+    Install-Fixture -Scenario $foregroundOnly -Package $packages['0.2.0'] -Version '0.2.0' | Out-Null
+    $foregroundRoot = Join-Path $foregroundOnly 'FarPilot'
+    $foregroundCurrent = Get-JunctionTarget (Join-Path $foregroundRoot 'current')
+    Write-TestStateFile -LocalAppData $foregroundOnly -Name 'processes' -Value @(
+        [PSCustomObject]@{ Id = 160; Name = 'farpilot.exe'; ExecutablePath = (Join-Path $foregroundCurrent 'farpilot.exe'); Stopped = $false }
+    )
+    $foregroundResult = Invoke-InstallerProcess -LocalAppData $foregroundOnly -PackagePath $validZip -Version '0.2.1' -Sha256 $validZipSha
+    Assert-True ($foregroundResult.ExitCode -ne 0) 'foreground-only Host unexpectedly entered an unrestorable upgrade'
+    Assert-Equal -Expected $foregroundCurrent -Actual (Get-JunctionTarget (Join-Path $foregroundRoot 'current')) -Message 'foreground-only rejection changed current'
+    Assert-True (-not [bool](@(Get-TestState -LocalAppData $foregroundOnly -Name 'processes')[0].Stopped)) 'foreground-only rejection stopped the prior Host'
 
     $noTask = Initialize-ScenarioRoot 'no-startup-task'
     Install-Fixture -Scenario $noTask -Package $packages['0.2.0'] -Version '0.2.0' | Out-Null
     Assert-True (-not [bool](Get-TestState -LocalAppData $noTask -Name 'task').Exists) 'NoStartupTask created a startup task'
 
-    # A prior running task is updated and restarted after successful activation.
+    # A prior running legacy CLI task is migrated to the runner and restarted after activation.
     $runningTask = Initialize-ScenarioRoot 'running-task'
-    Write-TestStateFile -LocalAppData $runningTask -Name 'task' -Value ([PSCustomObject]@{
-        Exists = $true; Running = $true; Executable = 'C:\Old\farpilot.exe'; Arguments = 'host start'
-        UserId = $env:USERNAME; RunLevel = 'Limited'
-    })
     Install-Fixture -Scenario $runningTask -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
+    $runningLegacyTask = Get-TestState -LocalAppData $runningTask -Name 'task'
+    $runningLegacyTask.Running = $true
+    Write-TestStateFile -LocalAppData $runningTask -Name 'task' -Value $runningLegacyTask
+    Install-Fixture -Scenario $runningTask -Package $validZip -Version '0.2.1' -EnableStartupTask | Out-Null
     $runningTaskState = Get-TestState -LocalAppData $runningTask -Name 'task'
     Assert-True ([bool]$runningTaskState.Running) 'prior running task was not restarted'
-    Assert-Equal -Expected (Join-Path $runningTask 'FarPilot\bin\farpilot.exe') -Actual ([string]$runningTaskState.Executable) -Message 'existing task was not updated'
+    Assert-Equal -Expected (Join-Path $runningTask 'FarPilot\bin\farpilot-host-runner.exe') -Actual ([string]$runningTaskState.Executable) -Message 'existing task was not updated to runner'
+    Assert-Equal -Expected 'run' -Actual ([string]$runningTaskState.Arguments) -Message 'existing task arguments were not updated to run'
+
+    # Equivalent current-user account representations normalize to the same SID.
+    foreach ($equivalentIdentity in @(("DOMAIN\" + $env:USERNAME), $TestCurrentUserSid)) {
+        $equivalentTaskScenario = Initialize-ScenarioRoot ("equivalent-task-identity-" + ($equivalentIdentity -replace '[^A-Za-z0-9]', '-'))
+        Install-Fixture -Scenario $equivalentTaskScenario -Package $validZip -Version '0.2.1' -EnableStartupTask | Out-Null
+        $equivalentTask = Get-TestState -LocalAppData $equivalentTaskScenario -Name 'task'
+        $equivalentTask.UserId = $equivalentIdentity
+        $equivalentTask.TriggerUserId = $equivalentIdentity
+        Write-TestStateFile -LocalAppData $equivalentTaskScenario -Name 'task' -Value $equivalentTask
+        $equivalentTaskResult = Invoke-InstallerProcess -LocalAppData $equivalentTaskScenario -PackagePath $validZip -Version '0.2.1' -Sha256 $validZipSha -EnableStartupTask
+        Assert-Equal -Expected 0 -Actual $equivalentTaskResult.ExitCode -Message "equivalent task identity was rejected: $equivalentIdentity`n$($equivalentTaskResult.Output)"
+    }
+
+    # Existing task evidence is validated even when install-state metadata exists.
+    foreach ($invalidTaskCase in @('external-executable', 'wrong-arguments', 'wrong-user', 'elevated-runlevel', 'wrong-trigger', 'wrong-trigger-user', 'wrong-logon-type')) {
+        $invalidTaskScenario = Initialize-ScenarioRoot ("invalid-existing-task-" + $invalidTaskCase)
+        Install-Fixture -Scenario $invalidTaskScenario -Package $validZip -Version '0.2.1' -EnableStartupTask | Out-Null
+        $invalidTaskRoot = Join-Path $invalidTaskScenario 'FarPilot'
+        $invalidTask = Get-TestState -LocalAppData $invalidTaskScenario -Name 'task'
+        switch ($invalidTaskCase) {
+            'external-executable' { $invalidTask.Executable = 'C:\External\farpilot-host-runner.exe' }
+            'wrong-arguments' { $invalidTask.Arguments = 'host start' }
+            'wrong-user' { $invalidTask.UserId = 'S-1-5-21-2000' }
+            'elevated-runlevel' { $invalidTask.RunLevel = 'Highest' }
+            'wrong-trigger' { $invalidTask.Trigger = 'AtStartup' }
+            'wrong-trigger-user' { $invalidTask | Add-Member -NotePropertyName TriggerUserId -NotePropertyValue 'S-1-5-21-2000' -Force }
+            'wrong-logon-type' { $invalidTask | Add-Member -NotePropertyName LogonType -NotePropertyValue 'ServiceAccount' -Force }
+        }
+        Write-TestStateFile -LocalAppData $invalidTaskScenario -Name 'task' -Value $invalidTask
+        $invalidTaskJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $invalidTaskScenario) 'task.json') -Raw
+        $invalidTaskCurrent = Get-JunctionTarget (Join-Path $invalidTaskRoot 'current')
+        $invalidTaskResult = Invoke-InstallerProcess -LocalAppData $invalidTaskScenario -PackagePath $validZip -Version '0.2.1' -Sha256 $validZipSha -EnableStartupTask
+        Assert-True ($invalidTaskResult.ExitCode -ne 0) "$invalidTaskCase existing task unexpectedly upgraded"
+        Assert-Equal -Expected $invalidTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $invalidTaskScenario) 'task.json') -Raw) -Message "$invalidTaskCase existing task changed before validation"
+        Assert-Equal -Expected $invalidTaskCurrent -Actual (Get-JunctionTarget (Join-Path $invalidTaskRoot 'current')) -Message "$invalidTaskCase existing task changed current"
+    }
+
+    $invalidUninstallTask = Initialize-ScenarioRoot 'invalid-existing-task-uninstall'
+    Install-Fixture -Scenario $invalidUninstallTask -Package $validZip -Version '0.2.1' -EnableStartupTask | Out-Null
+    $invalidUninstallRoot = Join-Path $invalidUninstallTask 'FarPilot'
+    $invalidUninstallTaskState = Get-TestState -LocalAppData $invalidUninstallTask -Name 'task'
+    $invalidUninstallTaskState.Executable = 'C:\External\farpilot-host-runner.exe'
+    Write-TestStateFile -LocalAppData $invalidUninstallTask -Name 'task' -Value $invalidUninstallTaskState
+    $invalidUninstallTaskJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $invalidUninstallTask) 'task.json') -Raw
+    $invalidUninstallCurrent = Get-JunctionTarget (Join-Path $invalidUninstallRoot 'current')
+    $invalidUninstallResult = Invoke-UninstallerProcess -LocalAppData $invalidUninstallTask
+    Assert-True ($invalidUninstallResult.ExitCode -ne 0) 'external existing task unexpectedly uninstalled managed state'
+    Assert-Equal -Expected $invalidUninstallTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $invalidUninstallTask) 'task.json') -Raw) -Message 'external existing task changed during rejected uninstall'
+    Assert-Equal -Expected $invalidUninstallCurrent -Actual (Get-JunctionTarget (Join-Path $invalidUninstallRoot 'current')) -Message 'external existing task uninstall changed current'
 
     # Injected failures after each activation boundary restore all prior observable state.
     foreach ($failurePoint in @('DuringPathStateCapture', 'DuringManagedProcessStop', 'AfterCurrentJunction', 'AfterBinJunction', 'AfterPathUpdate', 'DuringTaskUpdate', 'DuringTaskStart')) {
@@ -501,7 +848,7 @@ try {
         $priorBin = Get-JunctionTarget (Join-Path $transactionRoot 'bin')
         $priorPathJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $transaction) 'path.json') -Raw
         $priorTaskJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $transaction) 'task.json') -Raw
-        $failure = Invoke-InstallerProcess -LocalAppData $transaction -PackagePath $packages['0.2.1'] -Version '0.2.1' -Sha256 (Get-FileHash -Algorithm SHA256 $packages['0.2.1']).Hash -EnableStartupTask -FailAfter $failurePoint
+        $failure = Invoke-InstallerProcess -LocalAppData $transaction -PackagePath $validZip -Version '0.2.1' -Sha256 (Get-FileHash -Algorithm SHA256 $validZip).Hash -EnableStartupTask -FailAfter $failurePoint
         Assert-True ($failure.ExitCode -ne 0) "$failurePoint unexpectedly succeeded"
         Assert-Equal -Expected $priorCurrent -Actual (Get-JunctionTarget (Join-Path $transactionRoot 'current')) -Message "$failurePoint did not restore current"
         Assert-Equal -Expected $priorBin -Actual (Get-JunctionTarget (Join-Path $transactionRoot 'bin')) -Message "$failurePoint did not restore bin"
@@ -514,6 +861,26 @@ try {
         $transactionArtifacts = @(Get-ChildItem -LiteralPath $transactionRoot -Force -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.(staging|backup|legacy)\.' })
         Assert-Equal -Expected 0 -Actual $transactionArtifacts.Count -Message "$failurePoint left transaction artifacts"
     }
+
+    # A started runner must report fresh online status or the complete activation rolls back.
+    $onlineRollback = Initialize-ScenarioRoot 'online-deadline-rollback'
+    Install-Fixture -Scenario $onlineRollback -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
+    $onlineRollbackRoot = Join-Path $onlineRollback 'FarPilot'
+    $onlinePriorTask = Get-TestState -LocalAppData $onlineRollback -Name 'task'
+    $onlinePriorTask.Running = $true
+    Write-TestStateFile -LocalAppData $onlineRollback -Name 'task' -Value $onlinePriorTask
+    Write-TestStateFile -LocalAppData $onlineRollback -Name 'online' -Value ([PSCustomObject]@{ Online = $true; UpdatedAtMs = 0 })
+    $onlinePriorCurrent = Get-JunctionTarget (Join-Path $onlineRollbackRoot 'current')
+    $onlinePriorBin = Get-JunctionTarget (Join-Path $onlineRollbackRoot 'bin')
+    $onlinePriorPathJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $onlineRollback) 'path.json') -Raw
+    $onlinePriorTaskJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $onlineRollback) 'task.json') -Raw
+    $onlineFailure = Invoke-InstallerProcess -LocalAppData $onlineRollback -PackagePath $validZip -Version '0.2.1' -Sha256 $validZipSha -EnableStartupTask
+    Assert-True ($onlineFailure.ExitCode -ne 0) 'offline managed Host unexpectedly committed activation'
+    Assert-Equal -Expected $onlinePriorCurrent -Actual (Get-JunctionTarget (Join-Path $onlineRollbackRoot 'current')) -Message 'online deadline did not restore current'
+    Assert-Equal -Expected $onlinePriorBin -Actual (Get-JunctionTarget (Join-Path $onlineRollbackRoot 'bin')) -Message 'online deadline did not restore bin'
+    Assert-Equal -Expected $onlinePriorPathJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $onlineRollback) 'path.json') -Raw) -Message 'online deadline did not restore PATH'
+    Assert-Equal -Expected $onlinePriorTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $onlineRollback) 'task.json') -Raw) -Message 'online deadline did not restore task'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $onlineRollbackRoot 'releases\0.2.1-x86_64-pc-windows-msvc'))) 'online deadline left failed release'
 
     # Cleanup failure after commit keeps the healthy new activation and exits successfully with a warning.
     $cleanup = Initialize-ScenarioRoot 'cleanup-incomplete'
@@ -539,14 +906,21 @@ try {
 
     # Default uninstall removes only managed executable state and preserves identity/config/unrelated state.
     $uninstall = Initialize-ScenarioRoot 'uninstall-default'
-    Install-Fixture -Scenario $uninstall -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
+    Install-Fixture -Scenario $uninstall -Package $validZip -Version '0.2.1' -EnableStartupTask | Out-Null
     $uninstallRoot = Join-Path $uninstall 'FarPilot'
     'identity-sentinel' | Set-Content -LiteralPath (Join-Path $uninstallRoot 'host-identity.json')
     'config-sentinel' | Set-Content -LiteralPath (Join-Path $uninstallRoot 'host.json')
     'unrelated-sentinel' | Set-Content -LiteralPath (Join-Path $uninstallRoot 'user-notes.txt')
+    $runtime = Join-Path $uninstallRoot 'runtime'
+    New-Item -ItemType Directory -Path $runtime | Out-Null
+    foreach ($runtimeFile in @('host-status.json', 'runner-status.json', 'host.log', 'host.log.1', 'host.log.2')) {
+        'runtime-sentinel' | Set-Content -LiteralPath (Join-Path $runtime $runtimeFile)
+    }
     Write-TestStateFile -LocalAppData $uninstall -Name 'processes' -Value @(
-        [PSCustomObject]@{ Id = 201; Name = 'farpilot.exe'; ExecutablePath = "$uninstallRoot\releases\0.2.0-x86_64-pc-windows-msvc\farpilot.exe"; Stopped = $false },
-        [PSCustomObject]@{ Id = 202; Name = 'farpilot.exe'; ExecutablePath = 'C:\External\farpilot.exe'; Stopped = $false }
+        [PSCustomObject]@{ Id = 201; Name = 'farpilot.exe'; ExecutablePath = "$uninstallRoot\releases\0.2.1-x86_64-pc-windows-msvc\farpilot.exe"; Stopped = $false },
+        [PSCustomObject]@{ Id = 202; Name = 'farpilot.exe'; ExecutablePath = 'C:\External\farpilot.exe'; Stopped = $false },
+        [PSCustomObject]@{ Id = 203; Name = 'farpilot-host-runner.exe'; ExecutablePath = "$uninstallRoot\releases\0.2.1-x86_64-pc-windows-msvc\farpilot-host-runner.exe"; Stopped = $false },
+        [PSCustomObject]@{ Id = 204; Name = 'farpilot-host-runner.exe'; ExecutablePath = 'C:\External\farpilot-host-runner.exe'; Stopped = $false }
     )
     $defaultUninstall = Invoke-UninstallerProcess -LocalAppData $uninstall
     Assert-Equal -Expected 0 -Actual $defaultUninstall.ExitCode -Message "default uninstall failed: $($defaultUninstall.Output)"
@@ -559,12 +933,15 @@ try {
     }
     Assert-Equal -Expected 0 -Actual $remainingReleases.Count -Message 'default uninstall left release files'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $uninstallRoot 'install.lock'))) 'default uninstall left install lock'
+    Assert-True (-not (Test-Path -LiteralPath $runtime)) 'default uninstall left managed runtime logs or status'
     Assert-Equal -Expected 'identity-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $uninstallRoot 'host-identity.json') -Raw).Trim() -Message 'default uninstall removed identity'
     Assert-Equal -Expected 'config-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $uninstallRoot 'host.json') -Raw).Trim() -Message 'default uninstall removed config'
     Assert-Equal -Expected 'unrelated-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $uninstallRoot 'user-notes.txt') -Raw).Trim() -Message 'default uninstall removed unrelated state'
     $uninstallProcesses = @(Get-TestState -LocalAppData $uninstall -Name 'processes')
-    Assert-True ([bool]$uninstallProcesses[0].Stopped) 'default uninstall did not stop managed process'
-    Assert-True (-not [bool]$uninstallProcesses[1].Stopped) 'default uninstall stopped unmanaged same-name process'
+    Assert-True ([bool]$uninstallProcesses[0].Stopped) 'default uninstall did not stop managed CLI process'
+    Assert-True (-not [bool]$uninstallProcesses[1].Stopped) 'default uninstall stopped external CLI process'
+    Assert-True ([bool]$uninstallProcesses[2].Stopped) 'default uninstall did not stop managed runner process'
+    Assert-True (-not [bool]$uninstallProcesses[3].Stopped) 'default uninstall stopped external runner process'
     Assert-True (-not [bool](Get-TestState -LocalAppData $uninstall -Name 'task').Exists) 'default uninstall left managed task'
     $uninstallPath = Get-TestState -LocalAppData $uninstall -Name 'path'
     Assert-Equal -Expected 'C:\Unrelated' -Actual ([string]$uninstallPath.Value) -Message 'default uninstall did not restore unrelated-only user PATH'
@@ -769,6 +1146,10 @@ try {
         $failedUninstall = Initialize-ScenarioRoot ("uninstall-failure-" + $failurePoint)
         Install-Fixture -Scenario $failedUninstall -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
         $failedRoot = Join-Path $failedUninstall 'FarPilot'
+        $failedRuntime = Join-Path $failedRoot 'runtime'
+        New-Item -ItemType Directory -Path $failedRuntime | Out-Null
+        'runtime-status-sentinel' | Set-Content -LiteralPath (Join-Path $failedRuntime 'host-status.json')
+        'runtime-log-sentinel' | Set-Content -LiteralPath (Join-Path $failedRuntime 'host.log')
         $failedTask = Get-TestState -LocalAppData $failedUninstall -Name 'task'
         $failedTask.Running = $true
         Write-TestStateFile -LocalAppData $failedUninstall -Name 'task' -Value $failedTask
@@ -783,6 +1164,8 @@ try {
         Assert-True (Test-Path -LiteralPath (Join-Path $failedRoot 'releases\0.2.0-x86_64-pc-windows-msvc\farpilot.exe')) "$failurePoint removed releases"
         Assert-Equal -Expected $failedTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $failedUninstall) 'task.json') -Raw) -Message "$failurePoint did not restore running task"
         Assert-Equal -Expected $failedPathJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $failedUninstall) 'path.json') -Raw) -Message "$failurePoint changed PATH"
+        Assert-Equal -Expected 'runtime-status-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $failedRuntime 'host-status.json') -Raw).Trim() -Message "$failurePoint did not restore runtime status"
+        Assert-Equal -Expected 'runtime-log-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $failedRuntime 'host.log') -Raw).Trim() -Message "$failurePoint did not restore runtime log"
         Assert-True ($failure.Output -match '(?i)remaining|failed') "$failurePoint did not report remaining managed state"
     }
 
@@ -825,6 +1208,39 @@ try {
     $unsafeUninstallResult = Invoke-UninstallerProcess -LocalAppData $uninstallUnsafe
     Assert-True ($unsafeUninstallResult.ExitCode -ne 0) 'uninstall followed unmanaged current junction'
     Assert-Equal -Expected 'external-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $uninstallExternal 'keep.txt') -Raw).Trim() -Message 'uninstall deleted external target'
+
+    # Unknown or reparse runtime entries are rejected before task, PATH, alias, or release mutation.
+    foreach ($unsafeRuntimeCase in @('unknown-file', 'reparse-entry')) {
+        $unsafeRuntimeScenario = Initialize-ScenarioRoot ("uninstall-unsafe-runtime-" + $unsafeRuntimeCase)
+        Install-Fixture -Scenario $unsafeRuntimeScenario -Package $validZip -Version '0.2.1' -EnableStartupTask | Out-Null
+        $unsafeRuntimeRoot = Join-Path $unsafeRuntimeScenario 'FarPilot'
+        $unsafeRuntimeDir = Join-Path $unsafeRuntimeRoot 'runtime'
+        New-Item -ItemType Directory -Force -Path $unsafeRuntimeDir | Out-Null
+        $unsafeRuntimeExternal = $null
+        if ($unsafeRuntimeCase -ceq 'unknown-file') {
+            'unknown-runtime-sentinel' | Set-Content -LiteralPath (Join-Path $unsafeRuntimeDir 'operator-note.txt')
+        } else {
+            $unsafeRuntimeExternal = Join-Path $unsafeRuntimeScenario 'external-runtime-target'
+            New-Item -ItemType Directory -Path $unsafeRuntimeExternal | Out-Null
+            'external-runtime-sentinel' | Set-Content -LiteralPath (Join-Path $unsafeRuntimeExternal 'keep.txt')
+            New-Item -ItemType Junction -Path (Join-Path $unsafeRuntimeDir 'host.log.1') -Target $unsafeRuntimeExternal | Out-Null
+        }
+        $unsafeRuntimeCurrent = Get-JunctionTarget (Join-Path $unsafeRuntimeRoot 'current')
+        $unsafeRuntimeBin = Get-JunctionTarget (Join-Path $unsafeRuntimeRoot 'bin')
+        $unsafeRuntimeTaskJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $unsafeRuntimeScenario) 'task.json') -Raw
+        $unsafeRuntimePathJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $unsafeRuntimeScenario) 'path.json') -Raw
+        $unsafeRuntimeResult = Invoke-UninstallerProcess -LocalAppData $unsafeRuntimeScenario
+        Assert-True ($unsafeRuntimeResult.ExitCode -ne 0) "$unsafeRuntimeCase runtime unexpectedly uninstalled"
+        Assert-Equal -Expected $unsafeRuntimeCurrent -Actual (Get-JunctionTarget (Join-Path $unsafeRuntimeRoot 'current')) -Message "$unsafeRuntimeCase runtime changed current"
+        Assert-Equal -Expected $unsafeRuntimeBin -Actual (Get-JunctionTarget (Join-Path $unsafeRuntimeRoot 'bin')) -Message "$unsafeRuntimeCase runtime changed bin"
+        Assert-Equal -Expected $unsafeRuntimeTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $unsafeRuntimeScenario) 'task.json') -Raw) -Message "$unsafeRuntimeCase runtime changed task"
+        Assert-Equal -Expected $unsafeRuntimePathJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $unsafeRuntimeScenario) 'path.json') -Raw) -Message "$unsafeRuntimeCase runtime changed PATH"
+        if ($unsafeRuntimeCase -ceq 'unknown-file') {
+            Assert-Equal -Expected 'unknown-runtime-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $unsafeRuntimeDir 'operator-note.txt') -Raw).Trim() -Message 'unknown runtime file changed'
+        } else {
+            Assert-Equal -Expected 'external-runtime-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $unsafeRuntimeExternal 'keep.txt') -Raw).Trim() -Message 'runtime reparse target changed'
+        }
+    }
 
     # The complete release deletion tree is preflighted before task/process/PATH mutation.
     $preflightCases = @('unmanaged-directory', 'reparse-entry', 'unknown-nested-file', 'nested-release-junction')
@@ -897,10 +1313,12 @@ try {
     $source = Get-Content -LiteralPath $Installer -Raw
     Assert-True ($source -match 'function\s+Invoke-ManagedFarPilotProcessStop') 'managed process stop boundary is missing'
     Assert-True ($source -match 'function\s+Invoke-FarPilotStartupTaskUpdate') 'startup task boundary is missing'
+    Assert-True ($source -match "New-ScheduledTaskAction\s+-Execute\s+\`$Executable\s+-Argument\s+'run'") 'startup task does not use fixed runner arguments'
     Assert-True ($source -match 'function\s+Restore-FarPilotStartupTask') 'startup task rollback boundary is missing'
     Assert-True ($source -match 'function\s+Restore-UserPath') 'PATH rollback boundary is missing'
     Assert-True ($source -match 'function\s+Get-ManagedFarPilotProcessState') 'process snapshot boundary is missing'
-    Assert-True ($source -match 'Test-FileDigest\s+-Path\s+\$ReleaseExe') 'same-version release digest verification is missing'
+    Assert-True ($source -match 'function\s+Compare-FarPilotReleaseContent') 'same-version release content comparison boundary is missing'
+    Assert-True ($source -match 'Compare-FarPilotReleaseContent\s+-Expected\s+\$stagedLayout\s+-Actual\s+\$existingLayout') 'same-version release content comparison is missing'
     Assert-True ($source -match 'function\s+Assert-ManagedReleaseTarget') 'managed alias target validation is missing'
     Assert-True ($source -match 'function\s+Test-JunctionReleaseReference') 'rollback alias reference guard is missing'
     Assert-True ($source -notmatch '\[switch\]\$ConfirmPurge') 'public ConfirmPurge bypass parameter must not exist'

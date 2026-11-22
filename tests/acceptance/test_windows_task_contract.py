@@ -7,13 +7,13 @@ INSTALLER_TEST = ROOT / "deploy" / "windows" / "test-install.ps1"
 
 
 class WindowsManagedProcessContract(unittest.TestCase):
-    def test_installer_keeps_the_direct_host_task_contract(self):
+    def test_installer_uses_the_runner_task_contract(self):
         installer = INSTALLER.read_text()
         self.assertIn(
-            "New-ScheduledTaskAction -Execute $Executable -Argument 'host start'",
+            "New-ScheduledTaskAction -Execute $Executable -Argument 'run'",
             installer,
         )
-        self.assertNotIn("Get-FarPilotHostTaskActionSpec", installer)
+        self.assertIn("farpilot-host-runner.exe", installer)
         self.assertNotIn("-WindowStyle Hidden", installer)
 
     def test_installer_stops_release_and_alias_processes(self):
@@ -21,8 +21,12 @@ class WindowsManagedProcessContract(unittest.TestCase):
         test = INSTALLER_TEST.read_text()
         self.assertIn("ManagedAliases", installer)
         for required in [
-            "managed bin alias process was not stopped",
-            "managed current alias process was not stopped",
+            "managed bin alias CLI process was not stopped",
+            "managed current alias CLI process was not stopped",
+            "managed release runner process was not stopped",
+            "managed bin alias runner process was not stopped",
+            "managed current alias runner process was not stopped",
+            "external same-name runner process was stopped",
         ]:
             self.assertIn(required, test)
 

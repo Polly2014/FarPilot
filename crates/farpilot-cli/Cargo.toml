@@ -29,3 +29,6 @@ libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 qrcode.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

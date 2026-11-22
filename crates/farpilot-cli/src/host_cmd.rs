@@ -2,7 +2,6 @@
 use std::ffi::OsString;
 #[cfg(any(windows, test))]
 use std::io;
-#[cfg(any(windows, test))]
 use std::path::PathBuf;
 
 #[cfg(windows)]
@@ -10,8 +9,12 @@ use base64::Engine;
 #[cfg(windows)]
 use base64::engine::general_purpose::STANDARD;
 use farpilot_host::config::{HostConfig, default_data_dir};
+use farpilot_host::managed_status::{ErrorCategory, ManagedStatus};
 #[cfg(windows)]
-use serde::{Deserialize, Serialize};
+use farpilot_host::managed_status::{HostRuntimeState, StatusWriter};
+#[cfg(windows)]
+use serde::Deserialize;
+use serde::Serialize;
 use url::Url;
 
 #[cfg(windows)]
@@ -155,13 +158,82 @@ pub async fn pair() -> anyhow::Result<()> {
     }
 }
 
-pub fn status() -> anyhow::Result<()> {
-    let path = default_data_dir()?.join("host.json");
-    let config = HostConfig::load(&path)?;
+#[derive(Serialize)]
+struct SanitizedRuntimeStatus {
+    runner_state: String,
+    host_state: String,
+    restart_count: u32,
+    last_error_category: Option<ErrorCategory>,
+    updated_at_ms: u64,
+}
+
+fn load_sanitized_runtime_status(data_dir: &std::path::Path) -> SanitizedRuntimeStatus {
+    let runtime = data_dir.join("runtime");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0);
+    let host = std::fs::read(runtime.join("host-status.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<ManagedStatus>(&bytes).ok());
+    let runner = std::fs::read(runtime.join("runner-status.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let runner_state = runner
+        .as_ref()
+        .and_then(|value| value.get("runner_state"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("not_running")
+        .to_owned();
+    let (host_state, restart_count, last_error_category, updated_at_ms) = match host {
+        Some(status) if status.is_stale_at(now) => (
+            "stale".to_owned(),
+            status.restart_count,
+            status.last_error_category,
+            status.updated_at_ms,
+        ),
+        Some(status) => (
+            serde_json::to_value(status.state)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "unavailable".to_owned()),
+            status.restart_count,
+            status.last_error_category,
+            status.updated_at_ms,
+        ),
+        None => ("unavailable".to_owned(), 0, None, 0),
+    };
+    SanitizedRuntimeStatus {
+        runner_state,
+        host_state,
+        restart_count,
+        last_error_category,
+        updated_at_ms,
+    }
+}
+
+pub fn status(json: bool) -> anyhow::Result<()> {
+    let data_dir = default_data_dir()?;
+    let runtime = load_sanitized_runtime_status(&data_dir);
+    if json {
+        println!("{}", serde_json::to_string(&runtime)?);
+        return Ok(());
+    }
+    let config = HostConfig::load(&data_dir.join("host.json"))?;
     println!("Host: {}", config.display_name);
     println!("Host ID: {}", config.host_id);
     println!("Gateway: {}", config.gateway_https);
     println!("Herdr: {}", config.herdr_executable.display());
+    println!("Runner: {}", runtime.runner_state);
+    println!("Host runtime: {}", runtime.host_state);
+    println!("Restarts: {}", runtime.restart_count);
+    println!(
+        "Last error: {}",
+        runtime
+            .last_error_category
+            .map(|category| format!("{category:?}").to_ascii_lowercase())
+            .unwrap_or_else(|| "none".to_owned())
+    );
     Ok(())
 }
 
@@ -171,45 +243,137 @@ pub async fn start() -> anyhow::Result<()> {
         anyhow::bail!("host start currently requires native Windows")
     }
     #[cfg(windows)]
+    start_windows(None).await
+}
+
+pub async fn run_managed(status_file: PathBuf, event_log: PathBuf) -> anyhow::Result<()> {
+    #[cfg(not(windows))]
     {
-        use std::time::Instant;
-
-        use farpilot_host::client::{ConnectionErrorKind, HostClient, TransportSecurity};
-        use farpilot_host::herdr::HerdrConfig;
-        use farpilot_host::identity_store::FileIdentityStore;
-        use farpilot_host::identity_store::windows::DpapiProtector;
-        use farpilot_host::reconnect::ReconnectPolicy;
-
+        let _ = (status_file, event_log);
+        anyhow::bail!("managed Host runtime requires native Windows")
+    }
+    #[cfg(windows)]
+    {
         let data_dir = default_data_dir()?;
-        let config = HostConfig::load(&data_dir.join("host.json"))?;
-        let identity = FileIdentityStore::new(data_dir.join("host-identity.json"), DpapiProtector)
-            .load_or_create()?;
-        let client = HostClient::new(
-            config.gateway_wss()?.as_str(),
-            config.host_id.clone(),
-            identity,
-            TransportSecurity::RequireTls,
-        )?;
-        let policy = ReconnectPolicy::default();
-        let herdr = HerdrConfig::new(config.herdr_executable, config.herdr_session)?;
-        let mut post_auth_attempt: u32 = 0;
-        loop {
-            let connection = client.connect_until_authenticated(&policy).await?;
-            let connected_at = Instant::now();
-            match connection.run_herdr(herdr.clone()).await {
-                Ok(()) => eprintln!("FarPilot Gateway connection closed; reconnecting"),
-                Err(error) if error.kind() == ConnectionErrorKind::Permanent => {
-                    return Err(error.into());
-                }
-                Err(error) => eprintln!("FarPilot Gateway connection lost: {error}; reconnecting"),
-            }
-            if policy.should_reset_after(connected_at.elapsed()) {
-                post_auth_attempt = 0;
-            } else {
-                post_auth_attempt = post_auth_attempt.saturating_add(1);
-            }
-            policy.sleep_before_retry(post_auth_attempt).await;
+        let runtime = data_dir.join("runtime");
+        std::fs::create_dir_all(&runtime)?;
+        let metadata = std::fs::symlink_metadata(&runtime)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            anyhow::bail!("FarPilot runtime path is unsafe")
         }
+        let expected_status = runtime.join("host-status.json");
+        let expected_log = runtime.join("host.log");
+        if status_file != expected_status || event_log != expected_log {
+            anyhow::bail!("managed Host paths must use the FarPilot runtime directory")
+        }
+        let writer = StatusWriter::new(status_file)?;
+        start_windows(Some(writer)).await
+    }
+}
+
+#[cfg(windows)]
+async fn start_windows(status_writer: Option<StatusWriter>) -> anyhow::Result<()> {
+    use std::time::Instant;
+
+    use farpilot_host::client::{ConnectionErrorKind, HostClient, TransportSecurity};
+    use farpilot_host::herdr::HerdrConfig;
+    use farpilot_host::identity_store::FileIdentityStore;
+    use farpilot_host::identity_store::windows::DpapiProtector;
+    use farpilot_host::reconnect::ReconnectPolicy;
+
+    let data_dir = default_data_dir()?;
+    if let Some(writer) = &status_writer {
+        writer.write(&ManagedStatus::new(HostRuntimeState::Starting, 0, 0, None))?;
+    }
+    let config = HostConfig::load(&data_dir.join("host.json"))?;
+    let identity = FileIdentityStore::new(data_dir.join("host-identity.json"), DpapiProtector)
+        .load_or_create()?;
+    let client = HostClient::new(
+        config.gateway_wss()?.as_str(),
+        config.host_id.clone(),
+        identity,
+        TransportSecurity::RequireTls,
+    )?;
+    let policy = ReconnectPolicy::default();
+    let herdr = HerdrConfig::new(config.herdr_executable, config.herdr_session)?;
+    let mut post_auth_attempt: u32 = 0;
+    let mut generation: u64 = 0;
+    loop {
+        generation = generation.saturating_add(1);
+        if let Some(writer) = &status_writer {
+            writer.write(&ManagedStatus::new(
+                HostRuntimeState::Connecting,
+                generation,
+                post_auth_attempt,
+                None,
+            ))?;
+        }
+        let connection = match client.connect_until_authenticated(&policy).await {
+            Ok(connection) => connection,
+            Err(error) => {
+                let category = ErrorCategory::classify(&error.to_string());
+                if let Some(writer) = &status_writer {
+                    writer.write(&ManagedStatus::new(
+                        HostRuntimeState::PermanentError,
+                        generation,
+                        post_auth_attempt,
+                        Some(category),
+                    ))?;
+                }
+                return Err(error.into());
+            }
+        };
+        if let Some(writer) = &status_writer {
+            writer.write(&ManagedStatus::new(
+                HostRuntimeState::Authenticated,
+                generation,
+                post_auth_attempt,
+                None,
+            ))?;
+            writer.write(&ManagedStatus::new(
+                HostRuntimeState::Online,
+                generation,
+                post_auth_attempt,
+                None,
+            ))?;
+        }
+        let connected_at = Instant::now();
+        let failure = match connection.run_herdr(herdr.clone()).await {
+            Ok(()) => {
+                eprintln!("FarPilot Gateway connection closed; reconnecting");
+                None
+            }
+            Err(error) if error.kind() == ConnectionErrorKind::Permanent => {
+                let category = ErrorCategory::classify(&error.to_string());
+                if let Some(writer) = &status_writer {
+                    writer.write(&ManagedStatus::new(
+                        HostRuntimeState::PermanentError,
+                        generation,
+                        post_auth_attempt,
+                        Some(category),
+                    ))?;
+                }
+                return Err(error.into());
+            }
+            Err(error) => {
+                eprintln!("FarPilot Gateway connection lost: {error}; reconnecting");
+                Some(ErrorCategory::classify(&error.to_string()))
+            }
+        };
+        if policy.should_reset_after(connected_at.elapsed()) {
+            post_auth_attempt = 0;
+        } else {
+            post_auth_attempt = post_auth_attempt.saturating_add(1);
+        }
+        if let Some(writer) = &status_writer {
+            writer.write(&ManagedStatus::new(
+                HostRuntimeState::Backoff,
+                generation,
+                post_auth_attempt,
+                failure,
+            ))?;
+        }
+        policy.sleep_before_retry(post_auth_attempt).await;
     }
 }
 

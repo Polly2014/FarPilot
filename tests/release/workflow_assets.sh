@@ -77,7 +77,7 @@ def validate_release(document)
     ["ubuntu-24.04-arm", "aarch64-unknown-linux-musl", "farpilot-linux-aarch64"],
     ["macos-15-intel", "x86_64-apple-darwin", "farpilot-macos-x86_64"],
     ["macos-15", "aarch64-apple-darwin", "farpilot-macos-aarch64"],
-    ["windows-2025", "x86_64-pc-windows-msvc", "farpilot-windows-x86_64.exe"],
+    ["windows-2025", "x86_64-pc-windows-msvc", "farpilot-windows-x86_64.zip"],
   ]
   actual_matrix = matrix.map { |entry| [entry["runner"], entry["target"], entry["asset"]] }
   assert(actual_matrix == expected_matrix, "five-platform build matrix does not match release contract")
@@ -88,9 +88,35 @@ def validate_release(document)
   assert((configured_runners & retired_macos).empty?, "release workflow uses retired macOS runner labels")
   assert(jobs.dig("build", "runs-on") == "${{ matrix.runner }}", "build runner must come from matrix")
   assert(jobs.dig("build", "strategy", "fail-fast") == false, "build matrix must not fail fast")
-  build_text = steps_text(jobs.fetch("build"))
+  build = jobs.fetch("build")
+  build_steps = build.fetch("steps")
+  build_text = steps_text(build)
   assert(build_text.include?("targets\"=>\"${{ matrix.target }}"), "Rust toolchain must install the matrix target")
-  assert(build_text.include?("cargo build --release -p farpilot-cli --target"), "release binary build is missing")
+  assert(build_text.include?("cargo build --release -p farpilot-cli --target"), "Unix release binary build is missing")
+  assert(
+    build_text.include?("cargo build --release -p farpilot-cli --bin farpilot -p farpilot-host-runner --bin farpilot-host-runner --target"),
+    "Windows release must build the CLI and runner binaries explicitly",
+  )
+  verify_windows_index = build_steps.index { |step| step["name"] == "Verify Windows binaries" }
+  package_windows_index = build_steps.index { |step| step["name"] == "Package exact Windows ZIP" }
+  upload_index = build_steps.index { |step| step["uses"] == "actions/upload-artifact@v7" }
+  assert(!verify_windows_index.nil?, "Windows native version verification is missing")
+  assert(!package_windows_index.nil?, "Windows ZIP packaging step is missing")
+  assert(!upload_index.nil?, "release build artifact upload is missing")
+  assert(verify_windows_index < package_windows_index, "both Windows versions must be verified before packaging")
+  assert(package_windows_index < upload_index, "Windows ZIP must be validated before upload")
+  windows_verify = build_steps.fetch(verify_windows_index).fetch("run").to_s
+  assert(windows_verify.include?("farpilot.exe") && windows_verify.include?("farpilot-host-runner.exe"), "both Windows executables must run --version")
+  assert(windows_verify.scan("--version").length == 2, "Windows native version checks must cover exactly two executables")
+  windows_package = build_steps.fetch(package_windows_index).fetch("run").to_s
+  assert(windows_package.include?("System.IO.Compression.FileSystem"), "Windows package must load the ZipFile assembly explicitly")
+  assert(windows_package.include?("[IO.Compression.ZipArchive]::new"), "Windows package must use the .NET ZipArchive API")
+  assert(windows_package.include?("CreateEntry"), "Windows package must create exact entries explicitly")
+  assert(windows_package.include?("LastWriteTime"), "Windows ZIP entries must use a deterministic timestamp")
+  assert(!windows_package.include?("Compress-Archive"), "Compress-Archive is not the approved deterministic package path")
+  assert(windows_package.include?("farpilot.exe") && windows_package.include?("farpilot-host-runner.exe"), "Windows ZIP must contain the exact CLI and runner names")
+  upload_path = build_steps.fetch(upload_index).dig("with", "path").to_s
+  assert(upload_path == "release/${{ matrix.asset }}", "build upload must expose only the matrix release asset")
   assert(build_text.include?("retention-days\"=>1") || build_text.include?("retention-days") && build_text.include?("1"), "build artifact retention must be one day")
 
   assemble = jobs.fetch("assemble")
@@ -99,9 +125,14 @@ def validate_release(document)
   %w[scripts/release_manifest.py scripts/validate_release_assets.py install.sh install.ps1 install-gateway.sh manifest.json].each do |needle|
     assert(assemble_text.include?(needle), "assemble is missing #{needle}")
   end
-  %w[farpilot-linux-x86_64 farpilot-linux-aarch64 farpilot-macos-x86_64 farpilot-macos-aarch64 farpilot-windows-x86_64.exe].each do |asset|
+  %w[farpilot-linux-x86_64 farpilot-linux-aarch64 farpilot-macos-x86_64 farpilot-macos-aarch64 farpilot-windows-x86_64.zip].each do |asset|
     assert(assemble_text.include?(asset), "assemble exact-set check is missing #{asset}")
   end
+  assert(!assemble_text.include?("farpilot-windows-x86_64.exe"), "assemble must not accept a loose Windows executable")
+  manifest_step = assemble.fetch("steps").find { |step| step["name"] == "Generate release manifest" }
+  assert(!manifest_step.nil?, "manifest generation step is missing")
+  manifest_run = manifest_step.fetch("run").to_s
+  assert(manifest_run.index("scripts/release_manifest.py") < manifest_run.index("scripts/validate_release_assets.py"), "release assets must be validated after manifest generation")
 
   publish = jobs.fetch("publish")
   assert(Array(publish["needs"]) == ["assemble"] || publish["needs"] == "assemble", "publish must depend on assemble")
@@ -132,6 +163,15 @@ def validate_ci(document)
     "shellcheck",
     "PSScriptAnalyzer",
   ].each { |needle| assert(text.include?(needle), "CI is missing #{needle}") }
+  windows_job = jobs.fetch("test")
+  windows_text = steps_text(windows_job)
+  assert(
+    windows_text.include?("cargo build --release -p farpilot-cli --bin farpilot -p farpilot-host-runner --bin farpilot-host-runner"),
+    "Windows CI must explicitly build both executables",
+  )
+  assert(windows_text.include?("cargo test -p farpilot-host-runner --test windows_lifecycle"), "Windows CI must run the native runner lifecycle test")
+  assert(windows_text.include?("farpilot.exe") && windows_text.include?("farpilot-host-runner.exe"), "Windows CI must verify both native executable versions")
+  assert(windows_text.scan("--version").length >= 2, "Windows CI must run --version for both executables")
   assert(!text.include?("gh release create"), "normal CI must never publish")
 end
 

@@ -14,7 +14,7 @@ TARGETS = {
     "linux-aarch64": "farpilot-linux-aarch64",
     "macos-x86_64": "farpilot-macos-x86_64",
     "macos-aarch64": "farpilot-macos-aarch64",
-    "windows-x86_64": "farpilot-windows-x86_64.exe",
+    "windows-x86_64": "farpilot-windows-x86_64.zip",
 }
 
 
@@ -90,7 +90,7 @@ class ReleaseManifestTests(unittest.TestCase):
                 record["url"],
                 f"https://github.com/Polly2014/FarPilot/releases/download/v0.2.0/{name}",
             )
-        self.assertEqual(manifest["assets"]["windows-x86_64"]["format"], "exe")
+        self.assertEqual(manifest["assets"]["windows-x86_64"]["format"], "zip")
         for target in set(TARGETS) - {"windows-x86_64"}:
             self.assertEqual(manifest["assets"][target]["format"], "binary")
         installer = manifest["installers"]["gateway"]
