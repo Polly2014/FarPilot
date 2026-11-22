@@ -1,11 +1,14 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+Add-Type -AssemblyName System.IO.Compression
 
 $Installer = Join-Path $PSScriptRoot 'install.ps1'
 $OriginalLocalAppData = $env:LOCALAPPDATA
 $PowerShellExe = (Get-Process -Id $PID).Path
 $TempRoot = Join-Path ([IO.Path]::GetTempPath()) ('farpilot-installer-test-' + [guid]::NewGuid().ToString('N'))
+$MaxZipEntryBytes = [long](64MB)
+$MaxZipAggregateBytes = [long](96MB)
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
@@ -20,14 +23,20 @@ function Assert-Equal {
 }
 
 function Initialize-FarPilotFixture {
-    param([string]$Version, [string]$Destination, [string]$Marker = '')
+    param(
+        [string]$Version,
+        [string]$Destination,
+        [string]$Marker = '',
+        [string]$ProductName = 'farpilot'
+    )
     $source = [IO.Path]::ChangeExtension($Destination, '.rs')
     $escaped = $Version.Replace('\', '\\').Replace('"', '\"')
     $escapedMarker = $Marker.Replace('\', '\\').Replace('"', '\"')
+    $escapedProductName = $ProductName.Replace('\', '\\').Replace('"', '\"')
     @"
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("--version") {
-        println!("farpilot $escaped");
+        println!("$escapedProductName $escaped");
     } else {
         println!("fixture $escaped $escapedMarker");
     }
@@ -42,6 +51,60 @@ fn main() {
         throw "rustc reported success but FarPilot fixture $Version was not created at $Destination"
     }
     Remove-Item -LiteralPath $source -Force
+}
+
+function New-TestZipPackage {
+    param(
+        [string]$Destination,
+        [object[]]$Entries
+    )
+    if (Test-Path -LiteralPath $Destination) {
+        Remove-Item -LiteralPath $Destination -Force
+    }
+    $file = [IO.File]::Open($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        $archive = [IO.Compression.ZipArchive]::new($file, [IO.Compression.ZipArchiveMode]::Create, $false)
+        try {
+            foreach ($entrySpec in $Entries) {
+                $entry = $archive.CreateEntry([string]$entrySpec.Name, [IO.Compression.CompressionLevel]::Optimal)
+                if ($null -ne $entrySpec.PSObject.Properties['ExternalAttributes']) {
+                    $entry.ExternalAttributes = [int]$entrySpec.ExternalAttributes
+                }
+                if ($null -ne $entrySpec.PSObject.Properties['Directory'] -and [bool]$entrySpec.Directory) {
+                    continue
+                }
+                $entryStream = $entry.Open()
+                try {
+                    if ($null -ne $entrySpec.PSObject.Properties['SourcePath']) {
+                        $sourceStream = [IO.File]::OpenRead([string]$entrySpec.SourcePath)
+                        try {
+                            $sourceStream.CopyTo($entryStream)
+                        } finally {
+                            $sourceStream.Dispose()
+                        }
+                    } elseif ($null -ne $entrySpec.PSObject.Properties['Size']) {
+                        $remaining = [long]$entrySpec.Size
+                        $buffer = [byte[]]::new(1MB)
+                        while ($remaining -gt 0) {
+                            $count = [int][Math]::Min([long]$buffer.Length, $remaining)
+                            $entryStream.Write($buffer, 0, $count)
+                            $remaining -= $count
+                        }
+                    } else {
+                        $bytes = [Text.Encoding]::UTF8.GetBytes([string]$entrySpec.Content)
+                        $entryStream.Write($bytes, 0, $bytes.Length)
+                    }
+                } finally {
+                    $entryStream.Dispose()
+                }
+            }
+        } finally {
+            $archive.Dispose()
+        }
+    } finally {
+        $file.Dispose()
+    }
+    return $Destination
 }
 
 function Initialize-TestState {
@@ -244,13 +307,17 @@ function Assert-PreMutationFailureState {
         [string]$ExpectedPathJson,
         [string]$ExpectedTaskJson,
         [string]$RejectedVersion,
-        [string]$Label
+        [string]$Label,
+        [string]$ExpectedProcessJson = ''
     )
     $root = Join-Path $Scenario 'FarPilot'
     Assert-Equal -Expected $ExpectedCurrent -Actual (Get-JunctionTarget (Join-Path $root 'current')) -Message "$Label changed current"
     Assert-Equal -Expected $ExpectedBin -Actual (Get-JunctionTarget (Join-Path $root 'bin')) -Message "$Label changed bin"
     Assert-Equal -Expected $ExpectedPathJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $Scenario) 'path.json') -Raw) -Message "$Label changed PATH"
     Assert-Equal -Expected $ExpectedTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $Scenario) 'task.json') -Raw) -Message "$Label changed task"
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedProcessJson)) {
+        Assert-Equal -Expected $ExpectedProcessJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $Scenario) 'processes.json') -Raw) -Message "$Label changed processes"
+    }
     Assert-Equal -Expected 'identity-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $root 'host-identity.json') -Raw).Trim() -Message "$Label changed identity"
     Assert-Equal -Expected 'config-sentinel' -Actual (Get-Content -LiteralPath (Join-Path $root 'host.json') -Raw).Trim() -Message "$Label changed config"
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $root "releases\$RejectedVersion-x86_64-pc-windows-msvc"))) "$Label left a new release"
@@ -271,6 +338,130 @@ try {
     }
     $alternateSameVersion = Join-Path $fixtures 'farpilot-0.2.0-alternate.exe'
     Initialize-FarPilotFixture -Version '0.2.0' -Destination $alternateSameVersion -Marker 'alternate-build'
+
+    # ZIP packages must contain exactly the CLI and runner and must fail before mutation when malformed.
+    $zipRunner = Join-Path $fixtures 'farpilot-host-runner-0.2.1.exe'
+    Initialize-FarPilotFixture -Version '0.2.1' -Destination $zipRunner -ProductName 'farpilot-host-runner'
+    $mismatchedZipRunner = Join-Path $fixtures 'farpilot-host-runner-0.2.2.exe'
+    Initialize-FarPilotFixture -Version '0.2.2' -Destination $mismatchedZipRunner -ProductName 'farpilot-host-runner'
+    $zipCli = $packages['0.2.1']
+    $validZip = Join-Path $fixtures 'farpilot-windows-x86_64.zip'
+    $validEntries = @(
+        [PSCustomObject]@{ Name = 'farpilot.exe'; SourcePath = $zipCli },
+        [PSCustomObject]@{ Name = 'farpilot-host-runner.exe'; SourcePath = $zipRunner }
+    )
+    $null = New-TestZipPackage -Destination $validZip -Entries $validEntries
+
+    $invalidZips = [ordered]@{}
+    $invalidZips['missing runner'] = Join-Path $fixtures 'missing-runner.zip'
+    $null = New-TestZipPackage -Destination $invalidZips['missing runner'] -Entries @(
+        [PSCustomObject]@{ Name = 'farpilot.exe'; SourcePath = $zipCli }
+    )
+    $invalidZips['missing CLI'] = Join-Path $fixtures 'missing-cli.zip'
+    $null = New-TestZipPackage -Destination $invalidZips['missing CLI'] -Entries @(
+        [PSCustomObject]@{ Name = 'farpilot-host-runner.exe'; SourcePath = $zipRunner }
+    )
+    $invalidZips['extra file'] = Join-Path $fixtures 'extra-file.zip'
+    $null = New-TestZipPackage -Destination $invalidZips['extra file'] -Entries @(
+        $validEntries[0],
+        $validEntries[1],
+        [PSCustomObject]@{ Name = 'unexpected.txt'; Content = 'unexpected' }
+    )
+    $invalidZips['directory entry'] = Join-Path $fixtures 'directory-entry.zip'
+    $null = New-TestZipPackage -Destination $invalidZips['directory entry'] -Entries @(
+        $validEntries[0],
+        $validEntries[1],
+        [PSCustomObject]@{ Name = 'nested/'; Directory = $true }
+    )
+    $invalidZips['parent traversal'] = Join-Path $fixtures 'parent-traversal.zip'
+    $null = New-TestZipPackage -Destination $invalidZips['parent traversal'] -Entries @(
+        [PSCustomObject]@{ Name = '../farpilot.exe'; SourcePath = $zipCli },
+        $validEntries[1]
+    )
+    $invalidZips['absolute path'] = Join-Path $fixtures 'absolute-path.zip'
+    $null = New-TestZipPackage -Destination $invalidZips['absolute path'] -Entries @(
+        [PSCustomObject]@{ Name = '/farpilot.exe'; SourcePath = $zipCli },
+        $validEntries[1]
+    )
+    $invalidZips['drive-qualified path'] = Join-Path $fixtures 'drive-qualified-path.zip'
+    $null = New-TestZipPackage -Destination $invalidZips['drive-qualified path'] -Entries @(
+        [PSCustomObject]@{ Name = 'C:\farpilot.exe'; SourcePath = $zipCli },
+        $validEntries[1]
+    )
+    $invalidZips['nested path'] = Join-Path $fixtures 'nested-path.zip'
+    $null = New-TestZipPackage -Destination $invalidZips['nested path'] -Entries @(
+        [PSCustomObject]@{ Name = 'nested/farpilot.exe'; SourcePath = $zipCli },
+        $validEntries[1]
+    )
+    $invalidZips['case-insensitive duplicate'] = Join-Path $fixtures 'case-duplicate.zip'
+    $null = New-TestZipPackage -Destination $invalidZips['case-insensitive duplicate'] -Entries @(
+        $validEntries[0],
+        [PSCustomObject]@{ Name = 'FARPILOT.EXE'; SourcePath = $zipCli },
+        $validEntries[1]
+    )
+    $unixSymlinkAttributes = [BitConverter]::ToInt32([BitConverter]::GetBytes([uint32]2717843456), 0)
+    $invalidZips['symlink external attributes'] = Join-Path $fixtures 'symlink-attributes.zip'
+    $null = New-TestZipPackage -Destination $invalidZips['symlink external attributes'] -Entries @(
+        [PSCustomObject]@{ Name = 'farpilot.exe'; SourcePath = $zipCli; ExternalAttributes = $unixSymlinkAttributes },
+        $validEntries[1]
+    )
+    $invalidZips['reparse external attributes'] = Join-Path $fixtures 'reparse-attributes.zip'
+    $null = New-TestZipPackage -Destination $invalidZips['reparse external attributes'] -Entries @(
+        [PSCustomObject]@{ Name = 'farpilot.exe'; SourcePath = $zipCli; ExternalAttributes = [int][IO.FileAttributes]::ReparsePoint },
+        $validEntries[1]
+    )
+    $invalidZips['oversized entry'] = Join-Path $fixtures 'oversized-entry.zip'
+    $null = New-TestZipPackage -Destination $invalidZips['oversized entry'] -Entries @(
+        [PSCustomObject]@{ Name = 'farpilot.exe'; Size = ($MaxZipEntryBytes + 1) },
+        $validEntries[1]
+    )
+    $invalidZips['oversized aggregate'] = Join-Path $fixtures 'oversized-aggregate.zip'
+    $aggregateEntryBytes = [long]($MaxZipAggregateBytes / 2) + 1
+    $null = New-TestZipPackage -Destination $invalidZips['oversized aggregate'] -Entries @(
+        [PSCustomObject]@{ Name = 'farpilot.exe'; Size = $aggregateEntryBytes },
+        [PSCustomObject]@{ Name = 'farpilot-host-runner.exe'; Size = $aggregateEntryBytes }
+    )
+    $invalidZips['binary version mismatch'] = Join-Path $fixtures 'version-mismatch.zip'
+    $null = New-TestZipPackage -Destination $invalidZips['binary version mismatch'] -Entries @(
+        $validEntries[0],
+        [PSCustomObject]@{ Name = 'farpilot-host-runner.exe'; SourcePath = $mismatchedZipRunner }
+    )
+    $zipRejection = Initialize-ScenarioRoot 'zip-rejection'
+    Install-Fixture -Scenario $zipRejection -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
+    $zipRejectionRoot = Join-Path $zipRejection 'FarPilot'
+    'identity-sentinel' | Set-Content -LiteralPath (Join-Path $zipRejectionRoot 'host-identity.json')
+    'config-sentinel' | Set-Content -LiteralPath (Join-Path $zipRejectionRoot 'host.json')
+    $zipTask = Get-TestState -LocalAppData $zipRejection -Name 'task'
+    $zipTask.Running = $true
+    Write-TestStateFile -LocalAppData $zipRejection -Name 'task' -Value $zipTask
+    Write-TestStateFile -LocalAppData $zipRejection -Name 'processes' -Value @(
+        [PSCustomObject]@{ Id = 91; Name = 'farpilot.exe'; ExecutablePath = "$zipRejectionRoot\current\farpilot.exe"; Stopped = $false },
+        [PSCustomObject]@{ Id = 92; Name = 'farpilot.exe'; ExecutablePath = 'C:\External\farpilot.exe'; Stopped = $false },
+        [PSCustomObject]@{ Id = 93; Name = 'farpilot-host-runner.exe'; ExecutablePath = "$zipRejectionRoot\current\farpilot-host-runner.exe"; Stopped = $false },
+        [PSCustomObject]@{ Id = 94; Name = 'farpilot-host-runner.exe'; ExecutablePath = 'C:\External\farpilot-host-runner.exe'; Stopped = $false }
+    )
+    $zipCurrent = Get-JunctionTarget (Join-Path $zipRejectionRoot 'current')
+    $zipBin = Get-JunctionTarget (Join-Path $zipRejectionRoot 'bin')
+    $zipActiveDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $zipCurrent 'farpilot.exe')).Hash
+    $zipPathJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $zipRejection) 'path.json') -Raw
+    $zipTaskJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $zipRejection) 'task.json') -Raw
+    $zipProcessJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $zipRejection) 'processes.json') -Raw
+    foreach ($invalidZip in $invalidZips.GetEnumerator()) {
+        $invalidSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $invalidZip.Value).Hash.ToLowerInvariant()
+        $invalidResult = Invoke-InstallerProcess -LocalAppData $zipRejection -PackagePath $invalidZip.Value -Version '0.2.1' -Sha256 $invalidSha -EnableStartupTask
+        Assert-True ($invalidResult.ExitCode -ne 0) "$($invalidZip.Key) ZIP unexpectedly succeeded"
+        Assert-PreMutationFailureState -Scenario $zipRejection -ExpectedCurrent $zipCurrent -ExpectedBin $zipBin -ExpectedPathJson $zipPathJson -ExpectedTaskJson $zipTaskJson -ExpectedProcessJson $zipProcessJson -RejectedVersion '0.2.1' -Label "$($invalidZip.Key) ZIP"
+        Assert-Equal -Expected $zipActiveDigest -Actual (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $zipCurrent 'farpilot.exe')).Hash -Message "$($invalidZip.Key) ZIP changed the active release"
+    }
+
+    # RED: the legacy installer cannot yet activate the approved exact-two-file ZIP package.
+    $zipInstall = Initialize-ScenarioRoot 'zip-valid'
+    $validZipSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $validZip).Hash.ToLowerInvariant()
+    $validZipResult = Invoke-InstallerProcess -LocalAppData $zipInstall -PackagePath $validZip -Version '0.2.1' -Sha256 $validZipSha
+    Assert-Equal -Expected 0 -Actual $validZipResult.ExitCode -Message "exact-two-file ZIP install failed: $($validZipResult.Output)"
+    $zipRelease = Join-Path $zipInstall 'FarPilot\releases\0.2.1-x86_64-pc-windows-msvc'
+    Assert-True (Test-Path -LiteralPath (Join-Path $zipRelease 'farpilot.exe') -PathType Leaf) 'ZIP install omitted farpilot.exe'
+    Assert-True (Test-Path -LiteralPath (Join-Path $zipRelease 'farpilot-host-runner.exe') -PathType Leaf) 'ZIP install omitted farpilot-host-runner.exe'
 
     # Fresh install creates a versioned release and managed junctions.
     $fresh = Initialize-ScenarioRoot 'fresh'
