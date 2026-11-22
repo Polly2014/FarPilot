@@ -4,6 +4,7 @@ members = [
   "crates/farpilot-core",
   "crates/farpilot-gateway",
   "crates/farpilot-host",
+  "crates/farpilot-host-runner",
   "crates/farpilot-cli",
 ]
 
@@ -38,5 +39,5 @@ tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 tower = { version = "0.5", features = ["util"] }
 url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Storage_FileSystem"] }
 zeroize = { version = "1", features = ["derive"] }
