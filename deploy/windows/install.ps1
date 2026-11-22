@@ -189,13 +189,13 @@ function Expand-VerifiedFarPilotPackage {
                 foreach ($canonicalName in @('farpilot.exe', 'farpilot-host-runner.exe')) {
                     $entry = $accepted[$canonicalName]
                     $outputPath = Join-Path $Destination $canonicalName
-                    $input = $entry.Open()
+                    $entryInput = $entry.Open()
                     try {
                         $output = [IO.File]::Open($outputPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
                         try {
                             $buffer = [byte[]]::new(1MB)
                             $written = [long]0
-                            while (($read = $input.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                            while (($read = $entryInput.Read($buffer, 0, $buffer.Length)) -gt 0) {
                                 $written += [long]$read
                                 if ($written -gt [long]$entry.Length -or $written -gt $MaxZipEntryBytes) {
                                     throw "FarPilot ZIP entry expanded beyond its declared limit: $canonicalName"
@@ -210,7 +210,7 @@ function Expand-VerifiedFarPilotPackage {
                             $output.Dispose()
                         }
                     } finally {
-                        $input.Dispose()
+                        $entryInput.Dispose()
                     }
                 }
             } finally {
@@ -259,7 +259,7 @@ function Get-FarPilotReleaseLayout {
     throw "FarPilot $Label has unexpected contents: $Path"
 }
 
-function Assert-FarPilotReleaseBinaries {
+function Assert-FarPilotReleaseVersion {
     param([object]$Layout, [string]$ExpectedVersion, [string]$Label)
     Test-AuthenticodePolicy $Layout.Cli
     $cliVersion = Get-ExecutableVersion $Layout.Cli
@@ -271,7 +271,7 @@ function Assert-FarPilotReleaseBinaries {
     }
 }
 
-function Compare-FarPilotReleaseBytes {
+function Compare-FarPilotReleaseContent {
     param([object]$Expected, [object]$Actual)
     if ($Expected.Format -cne $Actual.Format) { return $false }
     foreach ($name in @($Expected.FileNames)) {
@@ -452,7 +452,7 @@ function Assert-ManagedReleaseTarget {
     }
     $expectedVersion = $Matches[1]
     $layout = Get-FarPilotReleaseLayout -Path $Target -Label 'junction target release'
-    Assert-FarPilotReleaseBinaries -Layout $layout -ExpectedVersion $expectedVersion -Label 'FarPilot junction target'
+    Assert-FarPilotReleaseVersion -Layout $layout -ExpectedVersion $expectedVersion -Label 'FarPilot junction target'
 }
 
 function Get-JunctionState {
@@ -1374,13 +1374,13 @@ try {
     }
     $stagedLayout = Get-FarPilotReleaseLayout -Path $stagingDir -Label 'staged release'
     if ($stagedLayout.Format -cne $package.Format) { throw 'Staged FarPilot release format does not match the package format' }
-    Assert-FarPilotReleaseBinaries -Layout $stagedLayout -ExpectedVersion $requestedVersion -Label 'Staged FarPilot release'
+    Assert-FarPilotReleaseVersion -Layout $stagedLayout -ExpectedVersion $requestedVersion -Label 'Staged FarPilot release'
 
     $releaseExists = Test-Path -LiteralPath $ReleaseDir
     if ($releaseExists) {
         $existingLayout = Get-FarPilotReleaseLayout -Path $ReleaseDir -Label 'existing release'
-        Assert-FarPilotReleaseBinaries -Layout $existingLayout -ExpectedVersion $requestedVersion -Label 'Existing FarPilot release'
-        if (-not (Compare-FarPilotReleaseBytes -Expected $stagedLayout -Actual $existingLayout)) {
+        Assert-FarPilotReleaseVersion -Layout $existingLayout -ExpectedVersion $requestedVersion -Label 'Existing FarPilot release'
+        if (-not (Compare-FarPilotReleaseContent -Expected $stagedLayout -Actual $existingLayout)) {
             throw 'Existing FarPilot release bytes differ from the verified package'
         }
     }
