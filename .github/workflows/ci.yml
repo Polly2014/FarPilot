@@ -93,9 +93,20 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: bash tests/install/gateway_installer.sh
-      - name: Build Windows Stage 0 binary
+      - name: Test Windows runner lifecycle
         if: runner.os == 'Windows'
-        run: cargo build --release -p farpilot-cli
+        run: cargo test -p farpilot-host-runner --test windows_lifecycle
+      - name: Build Windows Stage 0 binaries
+        if: runner.os == 'Windows'
+        run: cargo build --release -p farpilot-cli --bin farpilot -p farpilot-host-runner --bin farpilot-host-runner
+      - name: Verify Windows binary versions
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & "target/release/farpilot.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "farpilot.exe --version failed" }
+          & "target/release/farpilot-host-runner.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "farpilot-host-runner.exe --version failed" }
       - name: Install PSScriptAnalyzer
         if: runner.os == 'Windows'
         shell: pwsh
