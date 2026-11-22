@@ -58,10 +58,21 @@ enum HostCommand {
     },
     /// Start the outbound Host connection loop.
     Start,
+    /// Internal runner-managed Host connection loop.
+    #[command(hide = true)]
+    RunManaged {
+        #[arg(long)]
+        status_file: PathBuf,
+        #[arg(long)]
+        event_log: PathBuf,
+    },
     /// Create a new five-minute client pairing invitation.
     Pair,
     /// Show local Host and Gateway connection status.
-    Status,
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -122,11 +133,18 @@ async fn main() -> anyhow::Result<()> {
             command: HostCommand::Start,
         } => host_cmd::start().await,
         Command::Host {
+            command:
+                HostCommand::RunManaged {
+                    status_file,
+                    event_log,
+                },
+        } => host_cmd::run_managed(status_file, event_log).await,
+        Command::Host {
             command: HostCommand::Pair,
         } => host_cmd::pair().await,
         Command::Host {
-            command: HostCommand::Status,
-        } => host_cmd::status(),
+            command: HostCommand::Status { json },
+        } => host_cmd::status(json),
         Command::Gateway {
             command: GatewayCommand::Attach { device_id, socket },
         } => gateway_cmd::run_attach(&device_id, &socket).await,
