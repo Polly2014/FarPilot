@@ -342,7 +342,7 @@ function Wait-FarPilotManagedHostOnline {
                     return
                 }
             } catch {
-                # Concurrently replaced or partial status files remain offline until the next bounded poll.
+                Write-Debug 'FarPilot status files are not yet readable; continuing bounded readiness polling'
             }
         }
         Start-Sleep -Milliseconds 250
