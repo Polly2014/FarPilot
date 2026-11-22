@@ -845,6 +845,26 @@ try {
         Assert-Equal -Expected 0 -Actual $transactionArtifacts.Count -Message "$failurePoint left transaction artifacts"
     }
 
+    # A started runner must report fresh online status or the complete activation rolls back.
+    $onlineRollback = Initialize-ScenarioRoot 'online-deadline-rollback'
+    Install-Fixture -Scenario $onlineRollback -Package $packages['0.2.0'] -Version '0.2.0' -EnableStartupTask | Out-Null
+    $onlineRollbackRoot = Join-Path $onlineRollback 'FarPilot'
+    $onlinePriorTask = Get-TestState -LocalAppData $onlineRollback -Name 'task'
+    $onlinePriorTask.Running = $true
+    Write-TestStateFile -LocalAppData $onlineRollback -Name 'task' -Value $onlinePriorTask
+    Write-TestStateFile -LocalAppData $onlineRollback -Name 'online' -Value ([PSCustomObject]@{ Online = $false })
+    $onlinePriorCurrent = Get-JunctionTarget (Join-Path $onlineRollbackRoot 'current')
+    $onlinePriorBin = Get-JunctionTarget (Join-Path $onlineRollbackRoot 'bin')
+    $onlinePriorPathJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $onlineRollback) 'path.json') -Raw
+    $onlinePriorTaskJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $onlineRollback) 'task.json') -Raw
+    $onlineFailure = Invoke-InstallerProcess -LocalAppData $onlineRollback -PackagePath $validZip -Version '0.2.1' -Sha256 $validZipSha -EnableStartupTask
+    Assert-True ($onlineFailure.ExitCode -ne 0) 'offline managed Host unexpectedly committed activation'
+    Assert-Equal -Expected $onlinePriorCurrent -Actual (Get-JunctionTarget (Join-Path $onlineRollbackRoot 'current')) -Message 'online deadline did not restore current'
+    Assert-Equal -Expected $onlinePriorBin -Actual (Get-JunctionTarget (Join-Path $onlineRollbackRoot 'bin')) -Message 'online deadline did not restore bin'
+    Assert-Equal -Expected $onlinePriorPathJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $onlineRollback) 'path.json') -Raw) -Message 'online deadline did not restore PATH'
+    Assert-Equal -Expected $onlinePriorTaskJson -Actual (Get-Content -LiteralPath (Join-Path (Initialize-TestState $onlineRollback) 'task.json') -Raw) -Message 'online deadline did not restore task'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $onlineRollbackRoot 'releases\0.2.1-x86_64-pc-windows-msvc'))) 'online deadline left failed release'
+
     # Cleanup failure after commit keeps the healthy new activation and exits successfully with a warning.
     $cleanup = Initialize-ScenarioRoot 'cleanup-incomplete'
     $cleanupRoot = Join-Path $cleanup 'FarPilot'
