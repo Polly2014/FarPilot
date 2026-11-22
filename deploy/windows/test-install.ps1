@@ -1276,7 +1276,7 @@ try {
     $source = Get-Content -LiteralPath $Installer -Raw
     Assert-True ($source -match 'function\s+Invoke-ManagedFarPilotProcessStop') 'managed process stop boundary is missing'
     Assert-True ($source -match 'function\s+Invoke-FarPilotStartupTaskUpdate') 'startup task boundary is missing'
-    Assert-True ($source -match "New-ScheduledTaskAction\s+-Execute\s+`$Executable\s+-Argument\s+'run'") 'startup task does not use fixed runner arguments'
+    Assert-True ($source -match "New-ScheduledTaskAction\s+-Execute\s+\`$Executable\s+-Argument\s+'run'") 'startup task does not use fixed runner arguments'
     Assert-True ($source -match 'function\s+Restore-FarPilotStartupTask') 'startup task rollback boundary is missing'
     Assert-True ($source -match 'function\s+Restore-UserPath') 'PATH rollback boundary is missing'
     Assert-True ($source -match 'function\s+Get-ManagedFarPilotProcessState') 'process snapshot boundary is missing'
