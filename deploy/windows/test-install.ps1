@@ -53,7 +53,7 @@ fn main() {
     Remove-Item -LiteralPath $source -Force
 }
 
-function New-TestZipPackage {
+function Initialize-TestZipPackage {
     param(
         [string]$Destination,
         [object[]]$Entries
@@ -350,79 +350,79 @@ try {
         [PSCustomObject]@{ Name = 'farpilot.exe'; SourcePath = $zipCli },
         [PSCustomObject]@{ Name = 'farpilot-host-runner.exe'; SourcePath = $zipRunner }
     )
-    $null = New-TestZipPackage -Destination $validZip -Entries $validEntries
+    $null = Initialize-TestZipPackage -Destination $validZip -Entries $validEntries
 
     $invalidZips = [ordered]@{}
     $invalidZips['missing runner'] = Join-Path $fixtures 'missing-runner.zip'
-    $null = New-TestZipPackage -Destination $invalidZips['missing runner'] -Entries @(
+    $null = Initialize-TestZipPackage -Destination $invalidZips['missing runner'] -Entries @(
         [PSCustomObject]@{ Name = 'farpilot.exe'; SourcePath = $zipCli }
     )
     $invalidZips['missing CLI'] = Join-Path $fixtures 'missing-cli.zip'
-    $null = New-TestZipPackage -Destination $invalidZips['missing CLI'] -Entries @(
+    $null = Initialize-TestZipPackage -Destination $invalidZips['missing CLI'] -Entries @(
         [PSCustomObject]@{ Name = 'farpilot-host-runner.exe'; SourcePath = $zipRunner }
     )
     $invalidZips['extra file'] = Join-Path $fixtures 'extra-file.zip'
-    $null = New-TestZipPackage -Destination $invalidZips['extra file'] -Entries @(
+    $null = Initialize-TestZipPackage -Destination $invalidZips['extra file'] -Entries @(
         $validEntries[0],
         $validEntries[1],
         [PSCustomObject]@{ Name = 'unexpected.txt'; Content = 'unexpected' }
     )
     $invalidZips['directory entry'] = Join-Path $fixtures 'directory-entry.zip'
-    $null = New-TestZipPackage -Destination $invalidZips['directory entry'] -Entries @(
+    $null = Initialize-TestZipPackage -Destination $invalidZips['directory entry'] -Entries @(
         $validEntries[0],
         $validEntries[1],
         [PSCustomObject]@{ Name = 'nested/'; Directory = $true }
     )
     $invalidZips['parent traversal'] = Join-Path $fixtures 'parent-traversal.zip'
-    $null = New-TestZipPackage -Destination $invalidZips['parent traversal'] -Entries @(
+    $null = Initialize-TestZipPackage -Destination $invalidZips['parent traversal'] -Entries @(
         [PSCustomObject]@{ Name = '../farpilot.exe'; SourcePath = $zipCli },
         $validEntries[1]
     )
     $invalidZips['absolute path'] = Join-Path $fixtures 'absolute-path.zip'
-    $null = New-TestZipPackage -Destination $invalidZips['absolute path'] -Entries @(
+    $null = Initialize-TestZipPackage -Destination $invalidZips['absolute path'] -Entries @(
         [PSCustomObject]@{ Name = '/farpilot.exe'; SourcePath = $zipCli },
         $validEntries[1]
     )
     $invalidZips['drive-qualified path'] = Join-Path $fixtures 'drive-qualified-path.zip'
-    $null = New-TestZipPackage -Destination $invalidZips['drive-qualified path'] -Entries @(
+    $null = Initialize-TestZipPackage -Destination $invalidZips['drive-qualified path'] -Entries @(
         [PSCustomObject]@{ Name = 'C:\farpilot.exe'; SourcePath = $zipCli },
         $validEntries[1]
     )
     $invalidZips['nested path'] = Join-Path $fixtures 'nested-path.zip'
-    $null = New-TestZipPackage -Destination $invalidZips['nested path'] -Entries @(
+    $null = Initialize-TestZipPackage -Destination $invalidZips['nested path'] -Entries @(
         [PSCustomObject]@{ Name = 'nested/farpilot.exe'; SourcePath = $zipCli },
         $validEntries[1]
     )
     $invalidZips['case-insensitive duplicate'] = Join-Path $fixtures 'case-duplicate.zip'
-    $null = New-TestZipPackage -Destination $invalidZips['case-insensitive duplicate'] -Entries @(
+    $null = Initialize-TestZipPackage -Destination $invalidZips['case-insensitive duplicate'] -Entries @(
         $validEntries[0],
         [PSCustomObject]@{ Name = 'FARPILOT.EXE'; SourcePath = $zipCli },
         $validEntries[1]
     )
     $unixSymlinkAttributes = [BitConverter]::ToInt32([BitConverter]::GetBytes([uint32]2717843456), 0)
     $invalidZips['symlink external attributes'] = Join-Path $fixtures 'symlink-attributes.zip'
-    $null = New-TestZipPackage -Destination $invalidZips['symlink external attributes'] -Entries @(
+    $null = Initialize-TestZipPackage -Destination $invalidZips['symlink external attributes'] -Entries @(
         [PSCustomObject]@{ Name = 'farpilot.exe'; SourcePath = $zipCli; ExternalAttributes = $unixSymlinkAttributes },
         $validEntries[1]
     )
     $invalidZips['reparse external attributes'] = Join-Path $fixtures 'reparse-attributes.zip'
-    $null = New-TestZipPackage -Destination $invalidZips['reparse external attributes'] -Entries @(
+    $null = Initialize-TestZipPackage -Destination $invalidZips['reparse external attributes'] -Entries @(
         [PSCustomObject]@{ Name = 'farpilot.exe'; SourcePath = $zipCli; ExternalAttributes = [int][IO.FileAttributes]::ReparsePoint },
         $validEntries[1]
     )
     $invalidZips['oversized entry'] = Join-Path $fixtures 'oversized-entry.zip'
-    $null = New-TestZipPackage -Destination $invalidZips['oversized entry'] -Entries @(
+    $null = Initialize-TestZipPackage -Destination $invalidZips['oversized entry'] -Entries @(
         [PSCustomObject]@{ Name = 'farpilot.exe'; Size = ($MaxZipEntryBytes + 1) },
         $validEntries[1]
     )
     $invalidZips['oversized aggregate'] = Join-Path $fixtures 'oversized-aggregate.zip'
     $aggregateEntryBytes = [long]($MaxZipAggregateBytes / 2) + 1
-    $null = New-TestZipPackage -Destination $invalidZips['oversized aggregate'] -Entries @(
+    $null = Initialize-TestZipPackage -Destination $invalidZips['oversized aggregate'] -Entries @(
         [PSCustomObject]@{ Name = 'farpilot.exe'; Size = $aggregateEntryBytes },
         [PSCustomObject]@{ Name = 'farpilot-host-runner.exe'; Size = $aggregateEntryBytes }
     )
     $invalidZips['binary version mismatch'] = Join-Path $fixtures 'version-mismatch.zip'
-    $null = New-TestZipPackage -Destination $invalidZips['binary version mismatch'] -Entries @(
+    $null = Initialize-TestZipPackage -Destination $invalidZips['binary version mismatch'] -Entries @(
         $validEntries[0],
         [PSCustomObject]@{ Name = 'farpilot-host-runner.exe'; SourcePath = $mismatchedZipRunner }
     )
