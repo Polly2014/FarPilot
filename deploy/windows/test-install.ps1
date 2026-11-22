@@ -27,15 +27,21 @@ function Initialize-FarPilotFixture {
         [string]$Version,
         [string]$Destination,
         [string]$Marker = '',
-        [string]$ProductName = 'farpilot'
+        [string]$ProductName = 'farpilot',
+        [string]$VersionMarkerPath = ''
     )
     $source = [IO.Path]::ChangeExtension($Destination, '.rs')
     $escaped = $Version.Replace('\', '\\').Replace('"', '\"')
     $escapedMarker = $Marker.Replace('\', '\\').Replace('"', '\"')
     $escapedProductName = $ProductName.Replace('\', '\\').Replace('"', '\"')
+    $escapedVersionMarkerPath = $VersionMarkerPath.Replace('\', '\\').Replace('"', '\"')
     @"
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("--version") {
+        let marker = "$escapedVersionMarkerPath";
+        if !marker.is_empty() {
+            std::fs::write(marker, "version-invoked").unwrap();
+        }
         println!("$escapedProductName $escaped");
     } else {
         println!("fixture $escaped $escapedMarker");
@@ -477,6 +483,28 @@ try {
     $zipRelease = Join-Path $zipInstall 'FarPilot\releases\0.2.1-x86_64-pc-windows-msvc'
     Assert-True (Test-Path -LiteralPath (Join-Path $zipRelease 'farpilot.exe') -PathType Leaf) 'ZIP install omitted farpilot.exe'
     Assert-True (Test-Path -LiteralPath (Join-Path $zipRelease 'farpilot-host-runner.exe') -PathType Leaf) 'ZIP install omitted farpilot-host-runner.exe'
+
+    # Existing release bytes must match the verified package before either executable is invoked.
+    $tamperedCliScenario = Initialize-ScenarioRoot 'existing-cli-preflight'
+    Install-Fixture -Scenario $tamperedCliScenario -Package $packages['0.2.0'] -Version '0.2.0' | Out-Null
+    $tamperedCliRoot = Join-Path $tamperedCliScenario 'FarPilot'
+    $tamperedCliRelease = Get-JunctionTarget (Join-Path $tamperedCliRoot 'current')
+    $tamperedCliMarker = Join-Path $tamperedCliScenario 'tampered-cli-version-marker.txt'
+    $tamperedCliFixture = Join-Path $fixtures 'tampered-farpilot-0.2.0.exe'
+    Initialize-FarPilotFixture -Version '0.2.0' -Destination $tamperedCliFixture -Marker 'tampered-cli' -VersionMarkerPath $tamperedCliMarker
+    Copy-Item -LiteralPath $tamperedCliFixture -Destination (Join-Path $tamperedCliRelease 'farpilot.exe') -Force
+    $trustedCliSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $packages['0.2.0']).Hash.ToLowerInvariant()
+    $tamperedCliResult = Invoke-InstallerProcess -LocalAppData $tamperedCliScenario -PackagePath $packages['0.2.0'] -Version '0.2.0' -Sha256 $trustedCliSha
+    Assert-True ($tamperedCliResult.ExitCode -ne 0) 'tampered existing CLI unexpectedly matched the verified package'
+    Assert-True (-not (Test-Path -LiteralPath $tamperedCliMarker)) 'tampered existing CLI executed before byte comparison'
+
+    $tamperedRunnerMarker = Join-Path $zipInstall 'tampered-runner-version-marker.txt'
+    $tamperedRunnerFixture = Join-Path $fixtures 'tampered-farpilot-host-runner-0.2.1.exe'
+    Initialize-FarPilotFixture -Version '0.2.1' -Destination $tamperedRunnerFixture -Marker 'tampered-runner' -ProductName 'farpilot-host-runner' -VersionMarkerPath $tamperedRunnerMarker
+    Copy-Item -LiteralPath $tamperedRunnerFixture -Destination (Join-Path $zipRelease 'farpilot-host-runner.exe') -Force
+    $tamperedRunnerResult = Invoke-InstallerProcess -LocalAppData $zipInstall -PackagePath $validZip -Version '0.2.1' -Sha256 $validZipSha
+    Assert-True ($tamperedRunnerResult.ExitCode -ne 0) 'tampered existing runner unexpectedly matched the verified package'
+    Assert-True (-not (Test-Path -LiteralPath $tamperedRunnerMarker)) 'tampered existing runner executed before byte comparison'
 
     # Fresh install creates a versioned release and managed junctions.
     $fresh = Initialize-ScenarioRoot 'fresh'
