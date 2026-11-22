@@ -30,6 +30,7 @@ $MaxZipEntryBytes = [long](64MB)
 $MaxZipAggregateBytes = [long](96MB)
 $script:UseTestAdapters = $false
 $script:TestStateRoot = $null
+$script:TestCurrentUserSid = 'S-1-5-21-1000'
 
 function Write-Step {
     param([string]$Message)
@@ -92,6 +93,36 @@ function Test-RegularDirectory {
 function Get-CanonicalPath {
     param([string]$Path)
     return [IO.Path]::GetFullPath($Path).TrimEnd([char]'\')
+}
+
+function Get-FarPilotCurrentUserSid {
+    if ($script:UseTestAdapters) { return $script:TestCurrentUserSid }
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($null -eq $identity -or $null -eq $identity.User) { throw 'Unable to resolve the current Windows user SID' }
+    return [string]$identity.User.Value
+}
+
+function Resolve-FarPilotAccountSid {
+    param([string]$Identity)
+    if ([string]::IsNullOrWhiteSpace($Identity)) { throw 'FarPilot task identity is missing' }
+    if ($Identity -match '^S-1-(?:[0-9]+-)+[0-9]+$') {
+        try {
+            return [string]([Security.Principal.SecurityIdentifier]::new($Identity)).Value
+        } catch {
+            throw "FarPilot task identity contains an invalid SID: $Identity"
+        }
+    }
+    if ($script:UseTestAdapters) {
+        $leaf = @($Identity.Split('\'))[-1]
+        if ($leaf -ieq $env:USERNAME) { return $script:TestCurrentUserSid }
+        throw "FarPilot test task identity is not resolvable: $Identity"
+    }
+    try {
+        $account = [Security.Principal.NTAccount]::new($Identity)
+        return [string]($account.Translate([Security.Principal.SecurityIdentifier])).Value
+    } catch {
+        throw "Unable to resolve FarPilot task identity to SID: $Identity"
+    }
 }
 
 function Test-PathInside {
@@ -679,8 +710,11 @@ function Assert-FarPilotStartupTaskState {
     $validLegacyTask = $leaf -ieq 'farpilot.exe' -and $arguments -ceq 'host start'
     $validRunnerTask = $leaf -ieq 'farpilot-host-runner.exe' -and $arguments -ceq 'run'
     if (-not ($validLegacyTask -or $validRunnerTask)) { throw 'Existing FarPilot task action is not managed' }
-    if ([string]$State.UserId -ine $env:USERNAME -or [string]$State.RunLevel -ine 'Limited' -or
-        [string]$State.Trigger -cne 'AtLogOn' -or [string]$State.TriggerUserId -ine $env:USERNAME -or
+    $currentSid = Get-FarPilotCurrentUserSid
+    $principalSid = Resolve-FarPilotAccountSid ([string]$State.UserId)
+    $triggerSid = Resolve-FarPilotAccountSid ([string]$State.TriggerUserId)
+    if ($principalSid -ine $currentSid -or $triggerSid -ine $currentSid -or
+        [string]$State.RunLevel -ine 'Limited' -or [string]$State.Trigger -cne 'AtLogOn' -or
         [string]$State.LogonType -ine 'Interactive') {
         throw 'Existing FarPilot task principal or trigger is not managed'
     }
@@ -713,16 +747,17 @@ function Invoke-FarPilotStartupTaskUpdate {
     } else {
         throw "Refusing unexpected FarPilot task executable: $Executable"
     }
+    $currentUserSid = Get-FarPilotCurrentUserSid
     if ($script:UseTestAdapters) {
         $updated = [PSCustomObject]@{
             Exists = $true
             Running = $false
             Executable = $Executable
             Arguments = $arguments
-            UserId = $env:USERNAME
+            UserId = $currentUserSid
             RunLevel = 'Limited'
             Trigger = 'AtLogOn'
-            TriggerUserId = $env:USERNAME
+            TriggerUserId = $currentUserSid
             LogonType = 'Interactive'
         }
         Write-TestState -Name 'task' -Value $updated
@@ -739,8 +774,8 @@ function Invoke-FarPilotStartupTaskUpdate {
     } else {
         New-ScheduledTaskAction -Execute $Executable -Argument 'host start'
     }
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUserSid
+    $principal = New-ScheduledTaskPrincipal -UserId $currentUserSid -LogonType Interactive -RunLevel Limited
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
     Invoke-TestFailure -Point 'DuringTaskUpdate'
     if ($PreviousState.Running) {
