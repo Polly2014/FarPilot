@@ -1,3 +1,5 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use farpilot_host::managed_status::ErrorCategory;
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +27,25 @@ pub struct RunnerStatus {
 }
 
 impl RunnerStatus {
+    pub fn new(
+        runner_state: RunnerState,
+        restart_count: u32,
+        last_child_exit_code: Option<i32>,
+        next_retry_ms: Option<u64>,
+    ) -> Self {
+        let updated_at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0);
+        Self::new_at(
+            runner_state,
+            restart_count,
+            last_child_exit_code,
+            next_retry_ms,
+            updated_at_ms,
+        )
+    }
+
     pub const fn new_at(
         runner_state: RunnerState,
         restart_count: u32,

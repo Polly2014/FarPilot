@@ -169,7 +169,7 @@ impl StatusWriter {
         Ok(Self { path, temporary })
     }
 
-    pub fn write(&self, status: &ManagedStatus) -> io::Result<()> {
+    pub fn write<T: Serialize>(&self, status: &T) -> io::Result<()> {
         if let Ok(metadata) = fs::symlink_metadata(&self.temporary) {
             if !metadata.is_file() || metadata.file_type().is_symlink() {
                 return Err(io::Error::new(

@@ -679,6 +679,11 @@ try {
         Kind = 'String'
         ProcessValue = "C:\Unrelated;$adapterRoot\current"
     })
+    Write-TestStateFile -LocalAppData $adapter -Name 'task' -Value ([PSCustomObject]@{
+        Exists = $true; Running = $true; Executable = "$adapterRoot\bin\farpilot.exe"; Arguments = 'host start'
+        UserId = $TestCurrentUserSid; RunLevel = 'Limited'; Trigger = 'AtLogOn'
+        TriggerUserId = $TestCurrentUserSid; LogonType = 'Interactive'
+    })
     Write-TestStateFile -LocalAppData $adapter -Name 'processes' -Value @(
         [PSCustomObject]@{ Id = 101; Name = 'farpilot.exe'; ExecutablePath = "$adapterRoot\releases\0.1.0-x86_64-pc-windows-msvc\farpilot.exe"; Stopped = $false; StopOrder = 0 },
         [PSCustomObject]@{ Id = 102; Name = 'farpilot.exe'; ExecutablePath = 'C:\External\farpilot.exe'; Stopped = $false },
@@ -751,6 +756,18 @@ try {
         Assert-Equal -Expected $processRaceCurrent -Actual (Get-JunctionTarget (Join-Path $processRaceRoot 'current')) -Message "$processRaceCase changed current"
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $processRaceRoot 'releases\0.2.1-x86_64-pc-windows-msvc'))) "$processRaceCase left new release"
     }
+
+    $foregroundOnly = Initialize-ScenarioRoot 'foreground-only-upgrade'
+    Install-Fixture -Scenario $foregroundOnly -Package $packages['0.2.0'] -Version '0.2.0' | Out-Null
+    $foregroundRoot = Join-Path $foregroundOnly 'FarPilot'
+    $foregroundCurrent = Get-JunctionTarget (Join-Path $foregroundRoot 'current')
+    Write-TestStateFile -LocalAppData $foregroundOnly -Name 'processes' -Value @(
+        [PSCustomObject]@{ Id = 160; Name = 'farpilot.exe'; ExecutablePath = (Join-Path $foregroundCurrent 'farpilot.exe'); Stopped = $false }
+    )
+    $foregroundResult = Invoke-InstallerProcess -LocalAppData $foregroundOnly -PackagePath $validZip -Version '0.2.1' -Sha256 $validZipSha
+    Assert-True ($foregroundResult.ExitCode -ne 0) 'foreground-only Host unexpectedly entered an unrestorable upgrade'
+    Assert-Equal -Expected $foregroundCurrent -Actual (Get-JunctionTarget (Join-Path $foregroundRoot 'current')) -Message 'foreground-only rejection changed current'
+    Assert-True (-not [bool](@(Get-TestState -LocalAppData $foregroundOnly -Name 'processes')[0].Stopped)) 'foreground-only rejection stopped the prior Host'
 
     $noTask = Initialize-ScenarioRoot 'no-startup-task'
     Install-Fixture -Scenario $noTask -Package $packages['0.2.0'] -Version '0.2.0' | Out-Null
@@ -852,7 +869,7 @@ try {
     $onlinePriorTask = Get-TestState -LocalAppData $onlineRollback -Name 'task'
     $onlinePriorTask.Running = $true
     Write-TestStateFile -LocalAppData $onlineRollback -Name 'task' -Value $onlinePriorTask
-    Write-TestStateFile -LocalAppData $onlineRollback -Name 'online' -Value ([PSCustomObject]@{ Online = $false })
+    Write-TestStateFile -LocalAppData $onlineRollback -Name 'online' -Value ([PSCustomObject]@{ Online = $true; UpdatedAtMs = 0 })
     $onlinePriorCurrent = Get-JunctionTarget (Join-Path $onlineRollbackRoot 'current')
     $onlinePriorBin = Get-JunctionTarget (Join-Path $onlineRollbackRoot 'bin')
     $onlinePriorPathJson = Get-Content -LiteralPath (Join-Path (Initialize-TestState $onlineRollback) 'path.json') -Raw

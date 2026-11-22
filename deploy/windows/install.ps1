@@ -315,6 +315,41 @@ function Compare-FarPilotReleaseContent {
     return $true
 }
 
+function Wait-FarPilotManagedHostOnline {
+    param([string]$RuntimeDir, [long]$NotBeforeMs, [int]$TimeoutMilliseconds = 30000)
+    if ($script:UseTestAdapters) {
+        $state = Read-TestState -Name 'online' -DefaultValue ([PSCustomObject]@{ Online = $true; RunnerOnline = $true; UpdatedAtMs = $NotBeforeMs })
+        $updatedAt = if ($null -ne $state.PSObject.Properties['UpdatedAtMs']) { [long]$state.UpdatedAtMs } else { 0 }
+        $runnerOnline = if ($null -ne $state.PSObject.Properties['RunnerOnline']) { [bool]$state.RunnerOnline } else { $false }
+        if ([bool]$state.Online -and $runnerOnline -and $updatedAt -ge $NotBeforeMs) { return }
+        throw 'Timed out waiting for FarPilot managed Host to report online'
+    }
+    $statusPath = Join-Path $RuntimeDir 'host-status.json'
+    $runnerStatusPath = Join-Path $RuntimeDir 'runner-status.json'
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if ((Test-RegularFile $statusPath) -and (Test-RegularFile $runnerStatusPath)) {
+            try {
+                $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
+                $runnerStatus = Get-Content -LiteralPath $runnerStatusPath -Raw | ConvertFrom-Json
+                $updatedAt = [long]$status.updated_at_ms
+                $runnerUpdatedAt = [long]$runnerStatus.updated_at_ms
+                $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                $hostFresh = $updatedAt -ge $NotBeforeMs -and $updatedAt -le ($now + 5000) -and $updatedAt -ge ($now - 120000)
+                $runnerFresh = $runnerUpdatedAt -ge $NotBeforeMs -and $runnerUpdatedAt -le ($now + 5000) -and $runnerUpdatedAt -ge ($now - 120000)
+                if ([string]$status.state -ceq 'online' -and $hostFresh -and
+                    [string]$runnerStatus.runner_state -ceq 'running_child' -and $runnerFresh) {
+                    return
+                }
+            } catch {
+                # Concurrently replaced or partial status files remain offline until the next bounded poll.
+            }
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    throw 'Timed out waiting for FarPilot managed Host to report fresh online status'
+}
+
 function Invoke-CurlDownload {
     param([string]$Uri, [string]$Destination)
     $parsed = $null
@@ -737,7 +772,7 @@ function Invoke-FarPilotStartupTaskStop {
 }
 
 function Invoke-FarPilotStartupTaskUpdate {
-    param([string]$Executable, [object]$PreviousState, [bool]$CreateTask)
+    param([string]$Executable, [object]$PreviousState, [bool]$CreateTask, [bool]$StartTask)
     if (-not $CreateTask -and -not $PreviousState.Exists) { return }
     $leaf = Split-Path -Leaf $Executable
     if ($leaf -ieq 'farpilot-host-runner.exe') {
@@ -762,7 +797,7 @@ function Invoke-FarPilotStartupTaskUpdate {
         }
         Write-TestState -Name 'task' -Value $updated
         Invoke-TestFailure -Point 'DuringTaskUpdate'
-        if ($PreviousState.Running) {
+        if ($StartTask) {
             Invoke-TestFailure -Point 'DuringTaskStart'
             $updated.Running = $true
             Write-TestState -Name 'task' -Value $updated
@@ -778,17 +813,19 @@ function Invoke-FarPilotStartupTaskUpdate {
     $principal = New-ScheduledTaskPrincipal -UserId $currentUserSid -LogonType Interactive -RunLevel Limited
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
     Invoke-TestFailure -Point 'DuringTaskUpdate'
-    if ($PreviousState.Running) {
+    if ($StartTask) {
         Invoke-TestFailure -Point 'DuringTaskStart'
         Start-ScheduledTask -TaskName $TaskName
     }
 }
 
 function Restore-FarPilotStartupTask {
-    param([object]$State)
+    param([object]$State, [bool]$StartTask)
     if ($script:UseTestAdapters) {
         if ($State.Exists) {
-            Write-TestState -Name 'task' -Value $State.Definition
+            $restored = $State.Definition | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+            $restored.Running = $StartTask
+            Write-TestState -Name 'task' -Value $restored
         } else {
             Write-TestState -Name 'task' -Value ([PSCustomObject]@{
                 Exists = $false; Running = $false; Executable = $null; Arguments = $null
@@ -805,7 +842,7 @@ function Restore-FarPilotStartupTask {
         return
     }
     Register-ScheduledTask -TaskName $TaskName -InputObject $State.Definition -Force | Out-Null
-    if ($State.Running) {
+    if ($StartTask) {
         Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
     } else {
         Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -1331,7 +1368,7 @@ function Invoke-FarPilotUninstall {
             $failure = $_
             $restoreErrors = @(Restore-FarPilotUninstallQuarantine -Entries $quarantined)
             if ($pathMutated) { try { Restore-UserPath -State $pathState } catch { $restoreErrors += "PATH: $($_.Exception.Message)" } }
-            if ($taskMutated) { try { Restore-FarPilotStartupTask -State $taskState } catch { $restoreErrors += "task: $($_.Exception.Message)" } }
+            if ($taskMutated) { try { Restore-FarPilotStartupTask -State $taskState -StartTask ([bool]$taskState.Running) } catch { $restoreErrors += "task: $($_.Exception.Message)" } }
             $remaining = @($CurrentDir, $BinDir, $ReleasesDir, $RuntimeDir, $InstallStatePath) | Where-Object { Test-Path -LiteralPath $_ }
             $message = "FarPilot uninstall transaction failed: $($failure.Exception.Message). Remaining managed paths: $($remaining -join ', ')"
             if ($restoreErrors.Count -ne 0) { $message += ". Restore errors: $($restoreErrors -join '; ')" }
@@ -1501,6 +1538,7 @@ if ($DryRun) {
 $Root = Get-CanonicalPath (Join-Path $env:LOCALAPPDATA 'FarPilot')
 $ReleasesDir = Join-Path $Root 'releases'
 $CurrentDir = Join-Path $Root 'current'
+$RuntimeDir = Join-Path $Root 'runtime'
 $BinDir = if ([string]::IsNullOrWhiteSpace($InstallDir)) { Join-Path $Root 'bin' } else { Get-CanonicalPath $InstallDir }
 $ReleaseName = "$requestedVersion-$TargetTriple"
 $ReleaseDir = Join-Path $ReleasesDir $ReleaseName
@@ -1550,6 +1588,23 @@ try {
     Assert-FarPilotStartupTaskState -State $taskState -VisibleBin $BinDir
     $pathState = Get-UserPathState
     $processState = @(Get-ManagedFarPilotProcessState)
+    $managedProcessWasRunning = $false
+    foreach ($process in $processState) {
+        $processName = [string]$process.Name
+        $processPath = [string]$process.ExecutablePath
+        if ($processName -in @('farpilot.exe', 'farpilot-host-runner.exe') -and
+            -not [string]::IsNullOrWhiteSpace($processPath) -and
+            ((Test-PathInside -Path $processPath -Parent $ReleasesDir) -or
+             (Test-PathInside -Path $processPath -Parent $CurrentDir) -or
+             (Test-PathInside -Path $processPath -Parent $BinDir))) {
+            $managedProcessWasRunning = $true
+            break
+        }
+    }
+    if ($managedProcessWasRunning -and -not [bool]$taskState.Exists) {
+        throw 'Stop the foreground FarPilot Host before upgrading; its process-only mode cannot be restored safely'
+    }
+    $shouldStartManagedHost = [bool]$taskState.Running -or $managedProcessWasRunning
     $installState = Get-FarPilotInstallState -Path $InstallStatePath -DefaultBinDir (Join-Path $Root 'bin')
 
     $releaseCreated = $false
@@ -1558,6 +1613,7 @@ try {
     $binAttempted = $false
     $pathAttempted = $false
     $installStateAttempted = $false
+    $replacementStarted = $false
     try {
         $taskStopAttempted = $true
         Invoke-FarPilotStartupTaskStop $taskState
@@ -1575,17 +1631,34 @@ try {
         $pathAttempted = $true
         Invoke-UserPathUpdate -Entry $ReleaseDir -ReleasesDir $ReleasesDir -Aliases @($CurrentDir, $BinDir)
         $taskExecutableName = if ($stagedLayout.Format -ceq 'zip') { 'farpilot-host-runner.exe' } else { 'farpilot.exe' }
-        Invoke-FarPilotStartupTaskUpdate -Executable (Join-Path $BinDir $taskExecutableName) -PreviousState $taskState -CreateTask (-not $NoStartupTask)
+        $taskWillExist = (-not $NoStartupTask) -or [bool]$taskState.Exists
+        $startUpdatedTask = $shouldStartManagedHost -and $taskWillExist
+        $onlineNotBeforeMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        Invoke-FarPilotStartupTaskUpdate -Executable (Join-Path $BinDir $taskExecutableName) -PreviousState $taskState -CreateTask (-not $NoStartupTask) -StartTask $startUpdatedTask
+        $replacementStarted = $startUpdatedTask
         $installStateAttempted = $true
         Write-FarPilotInstallState -Path $InstallStatePath -VisibleBin $BinDir
+        if ($startUpdatedTask -and $stagedLayout.Format -ceq 'zip') {
+            Wait-FarPilotManagedHostOnline -RuntimeDir $RuntimeDir -NotBeforeMs $onlineNotBeforeMs
+        }
     } catch {
         $activationError = $_
         $rollbackErrors = @()
+        if ($replacementStarted) {
+            try {
+                $updatedTask = Get-FarPilotStartupTaskState
+                Invoke-FarPilotStartupTaskStop -State $updatedTask
+                $updatedProcesses = @(Get-ManagedFarPilotProcessState)
+                Invoke-ManagedFarPilotProcessStop -ProcessState $updatedProcesses -ReleasesDir $ReleasesDir -ManagedAliases @($BinDir, $CurrentDir)
+            } catch {
+                $rollbackErrors += "new managed Host stop: $($_.Exception.Message)"
+            }
+        }
         if ($installStateAttempted) {
             try { Restore-FarPilotInstallState -Path $InstallStatePath -State $installState } catch { $rollbackErrors += "install state: $($_.Exception.Message)" }
         }
         if ($taskStopAttempted) {
-            try { Restore-FarPilotStartupTask -State $taskState } catch { $rollbackErrors += "startup task: $($_.Exception.Message)" }
+            try { Restore-FarPilotStartupTask -State $taskState -StartTask $false } catch { $rollbackErrors += "startup task: $($_.Exception.Message)" }
         }
         if ($pathAttempted) {
             try { Restore-UserPath -State $pathState } catch { $rollbackErrors += "user PATH: $($_.Exception.Message)" }
@@ -1595,6 +1668,9 @@ try {
         }
         if ($currentAttempted) {
             try { Restore-ManagedJunction -Path $CurrentDir -State $currentState } catch { $rollbackErrors += "current junction: $($_.Exception.Message)" }
+        }
+        if ($taskStopAttempted -and [bool]$taskState.Running -and $rollbackErrors.Count -eq 0) {
+            try { Restore-FarPilotStartupTask -State $taskState -StartTask $true } catch { $rollbackErrors += "startup task restart: $($_.Exception.Message)" }
         }
         if ($releaseCreated -and $rollbackErrors.Count -eq 0 -and (Test-RegularDirectory $ReleaseDir)) {
             $releaseReferenced = (Test-JunctionReleaseReference -Path $CurrentDir -ReleaseDir $ReleaseDir) -or

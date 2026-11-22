@@ -10,9 +10,11 @@ use std::process::{Command, Stdio};
 use std::ptr;
 use std::time::Instant;
 
+use farpilot_host::managed_status::StatusWriter;
 use farpilot_host_runner::backoff::RestartBackoff;
 use farpilot_host_runner::layout::resolve_sibling_cli;
 use farpilot_host_runner::log_rotation::rotate_if_needed;
+use farpilot_host_runner::status::{RunnerState, RunnerStatus};
 use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -61,8 +63,10 @@ pub fn run() -> anyhow::Result<()> {
     let runtime = runtime_dir()?;
     fs::create_dir_all(&runtime)?;
     let status = runtime.join("host-status.json");
+    let runner_status = StatusWriter::new(runtime.join("runner-status.json"))?;
     let log = runtime.join("host.log");
     let mut backoff = RestartBackoff::default();
+    runner_status.write(&RunnerStatus::new(RunnerState::Starting, 0, None, None))?;
 
     loop {
         rotate_if_needed(&log, LOG_LIMIT)?;
@@ -90,9 +94,22 @@ pub fn run() -> anyhow::Result<()> {
             let _ = child.wait();
             return Err(io::Error::last_os_error().into());
         }
-        let _status = child.wait()?;
+        runner_status.write(&RunnerStatus::new(
+            RunnerState::RunningChild,
+            backoff.restart_count(),
+            None,
+            None,
+        ))?;
+        let child_status = child.wait()?;
         backoff.observe_online(started.elapsed());
-        std::thread::sleep(backoff.next_delay());
+        let delay = backoff.next_delay();
+        runner_status.write(&RunnerStatus::new(
+            RunnerState::WaitingToRestart,
+            backoff.restart_count(),
+            child_status.code(),
+            Some(u64::try_from(delay.as_millis()).unwrap_or(u64::MAX)),
+        ))?;
+        std::thread::sleep(delay);
     }
 }
 
