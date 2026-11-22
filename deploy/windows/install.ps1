@@ -546,10 +546,16 @@ function Invoke-ManagedFarPilotProcessStop {
     param(
         [object[]]$ProcessState,
         [string]$ReleasesDir,
-        [string[]]$ManagedAliases = @()
+        [string[]]$ManagedAliases = @(),
+        [int]$TimeoutMilliseconds = 5000
     )
     Invoke-TestFailure -Point 'DuringManagedProcessStop'
-    foreach ($process in @($ProcessState)) {
+    $ordered = @($ProcessState | Sort-Object -Property @(
+        @{ Expression = { if ([string]$_.Name -ieq 'farpilot.exe') { 0 } else { 1 } } },
+        @{ Expression = { if ($_.PSObject.Properties['ProcessId']) { [int]$_.ProcessId } else { [int]$_.Id } } }
+    ))
+    $stopOrder = 0
+    foreach ($process in $ordered) {
         $path = [string]$process.ExecutablePath
         $name = if ($process.PSObject.Properties['Name']) { [string]$process.Name } else { 'farpilot.exe' }
         $managed = -not [string]::IsNullOrWhiteSpace($path) -and (Test-PathInside -Path $path -Parent $ReleasesDir)
@@ -561,12 +567,52 @@ function Invoke-ManagedFarPilotProcessStop {
                 }
             }
         }
-        if ($name -in @('farpilot.exe', 'farpilot-host-runner.exe') -and $managed) {
-            if ($script:UseTestAdapters) {
-                $process.Stopped = $true
-            } else {
-                Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+        if ($name -notin @('farpilot.exe', 'farpilot-host-runner.exe') -or -not $managed) { continue }
+
+        if ($script:UseTestAdapters) {
+            if ($null -ne $process.PSObject.Properties['Exited'] -and [bool]$process.Exited) { continue }
+            $currentName = if ($null -ne $process.PSObject.Properties['CurrentName']) { [string]$process.CurrentName } else { $name }
+            $currentPath = if ($null -ne $process.PSObject.Properties['CurrentExecutablePath']) { [string]$process.CurrentExecutablePath } else { $path }
+            if ($currentName -ine $name -or (Get-CanonicalPath $currentPath) -ine (Get-CanonicalPath $path)) {
+                throw "Managed FarPilot process identity changed before stop: $name"
             }
+            $stopOrder += 1
+            $process.Stopped = $true
+            $process | Add-Member -NotePropertyName StopOrder -NotePropertyValue $stopOrder -Force
+            if ($null -ne $process.PSObject.Properties['WaitTimedOut'] -and [bool]$process.WaitTimedOut) {
+                Write-TestState -Name 'processes' -Value @($ProcessState)
+                throw "Timed out waiting for managed FarPilot process to stop: $name"
+            }
+            continue
+        }
+
+        $processId = [int]$process.ProcessId
+        $current = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+        if ($null -eq $current) { continue }
+        if ([string]$current.Name -ine $name -or [string]::IsNullOrWhiteSpace([string]$current.ExecutablePath) -or
+            (Get-CanonicalPath ([string]$current.ExecutablePath)) -ine (Get-CanonicalPath $path)) {
+            throw "Managed FarPilot process identity changed before stop: PID $processId"
+        }
+        try {
+            Stop-Process -Id $processId -Force -ErrorAction Stop
+        } catch {
+            $afterFailure = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+            if ($null -eq $afterFailure) { continue }
+            throw
+        }
+        $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+        while ($true) {
+            $remaining = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+            if ($null -eq $remaining) { break }
+            if ([string]$remaining.Name -ine $name -or
+                [string]::IsNullOrWhiteSpace([string]$remaining.ExecutablePath) -or
+                (Get-CanonicalPath ([string]$remaining.ExecutablePath)) -ine (Get-CanonicalPath $path)) {
+                throw "Managed FarPilot PID was reused while waiting for stop: $processId"
+            }
+            if ([DateTime]::UtcNow -ge $deadline) {
+                throw "Timed out waiting for managed FarPilot process to stop: PID $processId"
+            }
+            Start-Sleep -Milliseconds 100
         }
     }
     if ($script:UseTestAdapters) {
@@ -582,6 +628,8 @@ function Get-FarPilotStartupTaskState {
         }
         $state = Read-TestState -Name 'task' -DefaultValue $missing
         $triggerKind = if ($null -ne $state.PSObject.Properties['Trigger']) { [string]$state.Trigger } else { $null }
+        $triggerUserId = if ($null -ne $state.PSObject.Properties['TriggerUserId']) { [string]$state.TriggerUserId } else { $null }
+        $logonType = if ($null -ne $state.PSObject.Properties['LogonType']) { [string]$state.LogonType } else { $null }
         return [PSCustomObject]@{
             Exists = [bool]$state.Exists
             Running = [bool]$state.Running
@@ -590,6 +638,8 @@ function Get-FarPilotStartupTaskState {
             UserId = [string]$state.UserId
             RunLevel = [string]$state.RunLevel
             Trigger = $triggerKind
+            TriggerUserId = $triggerUserId
+            LogonType = $logonType
             Definition = $state
         }
     }
@@ -611,6 +661,8 @@ function Get-FarPilotStartupTaskState {
         UserId = [string]$task.Principal.UserId
         RunLevel = [string]$task.Principal.RunLevel
         Trigger = $triggerKind
+        TriggerUserId = if ($triggers.Count -eq 1) { [string]$triggers[0].UserId } else { $null }
+        LogonType = [string]$task.Principal.LogonType
         Definition = $task
     }
 }
@@ -628,7 +680,8 @@ function Assert-FarPilotStartupTaskState {
     $validRunnerTask = $leaf -ieq 'farpilot-host-runner.exe' -and $arguments -ceq 'run'
     if (-not ($validLegacyTask -or $validRunnerTask)) { throw 'Existing FarPilot task action is not managed' }
     if ([string]$State.UserId -ine $env:USERNAME -or [string]$State.RunLevel -ine 'Limited' -or
-        [string]$State.Trigger -cne 'AtLogOn') {
+        [string]$State.Trigger -cne 'AtLogOn' -or [string]$State.TriggerUserId -ine $env:USERNAME -or
+        [string]$State.LogonType -ine 'Interactive') {
         throw 'Existing FarPilot task principal or trigger is not managed'
     }
     if (-not [string]::IsNullOrWhiteSpace($VisibleBin)) {
@@ -669,6 +722,8 @@ function Invoke-FarPilotStartupTaskUpdate {
             UserId = $env:USERNAME
             RunLevel = 'Limited'
             Trigger = 'AtLogOn'
+            TriggerUserId = $env:USERNAME
+            LogonType = 'Interactive'
         }
         Write-TestState -Name 'task' -Value $updated
         Invoke-TestFailure -Point 'DuringTaskUpdate'

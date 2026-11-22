@@ -9,6 +9,7 @@ $PowerShellExe = (Get-Process -Id $PID).Path
 $TempRoot = Join-Path ([IO.Path]::GetTempPath()) ('farpilot-installer-test-' + [guid]::NewGuid().ToString('N'))
 $MaxZipEntryBytes = [long](64MB)
 $MaxZipAggregateBytes = [long](96MB)
+$TestCurrentUserSid = 'S-1-5-21-1000'
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
@@ -717,12 +718,12 @@ try {
     Assert-True ([bool]$taskState.Exists) 'default fresh install did not create startup task'
     Assert-Equal -Expected (Join-Path $adapterRoot 'bin\farpilot-host-runner.exe') -Actual ([string]$taskState.Executable) -Message 'startup task executable is not the runner'
     Assert-Equal -Expected 'run' -Actual ([string]$taskState.Arguments) -Message 'startup task arguments are not fixed to run'
-    Assert-Equal -Expected $env:USERNAME -Actual ([string]$taskState.UserId) -Message 'startup task user is not the current user'
+    Assert-Equal -Expected $TestCurrentUserSid -Actual ([string]$taskState.UserId) -Message 'startup task user is not the current user SID'
     Assert-Equal -Expected 'Limited' -Actual ([string]$taskState.RunLevel) -Message 'startup task run level is not limited'
     Assert-True ($null -ne $taskState.PSObject.Properties['Trigger']) 'startup task trigger was not recorded'
     Assert-Equal -Expected 'AtLogOn' -Actual ([string]$taskState.Trigger) -Message 'startup task trigger is not AtLogOn'
     Assert-True ($null -ne $taskState.PSObject.Properties['TriggerUserId']) 'startup task trigger user was not recorded'
-    Assert-Equal -Expected $env:USERNAME -Actual ([string]$taskState.TriggerUserId) -Message 'startup task trigger user is not current user'
+    Assert-Equal -Expected $TestCurrentUserSid -Actual ([string]$taskState.TriggerUserId) -Message 'startup task trigger user is not current user SID'
     Assert-True ($null -ne $taskState.PSObject.Properties['LogonType']) 'startup task logon type was not recorded'
     Assert-Equal -Expected 'Interactive' -Actual ([string]$taskState.LogonType) -Message 'startup task logon type is not Interactive'
 
@@ -767,6 +768,18 @@ try {
     Assert-Equal -Expected (Join-Path $runningTask 'FarPilot\bin\farpilot-host-runner.exe') -Actual ([string]$runningTaskState.Executable) -Message 'existing task was not updated to runner'
     Assert-Equal -Expected 'run' -Actual ([string]$runningTaskState.Arguments) -Message 'existing task arguments were not updated to run'
 
+    # Equivalent current-user account representations normalize to the same SID.
+    foreach ($equivalentIdentity in @(("DOMAIN\" + $env:USERNAME), $TestCurrentUserSid)) {
+        $equivalentTaskScenario = Initialize-ScenarioRoot ("equivalent-task-identity-" + ($equivalentIdentity -replace '[^A-Za-z0-9]', '-'))
+        Install-Fixture -Scenario $equivalentTaskScenario -Package $validZip -Version '0.2.1' -EnableStartupTask | Out-Null
+        $equivalentTask = Get-TestState -LocalAppData $equivalentTaskScenario -Name 'task'
+        $equivalentTask.UserId = $equivalentIdentity
+        $equivalentTask.TriggerUserId = $equivalentIdentity
+        Write-TestStateFile -LocalAppData $equivalentTaskScenario -Name 'task' -Value $equivalentTask
+        $equivalentTaskResult = Invoke-InstallerProcess -LocalAppData $equivalentTaskScenario -PackagePath $validZip -Version '0.2.1' -Sha256 $validZipSha -EnableStartupTask
+        Assert-Equal -Expected 0 -Actual $equivalentTaskResult.ExitCode -Message "equivalent task identity was rejected: $equivalentIdentity`n$($equivalentTaskResult.Output)"
+    }
+
     # Existing task evidence is validated even when install-state metadata exists.
     foreach ($invalidTaskCase in @('external-executable', 'wrong-arguments', 'wrong-user', 'elevated-runlevel', 'wrong-trigger', 'wrong-trigger-user', 'wrong-logon-type')) {
         $invalidTaskScenario = Initialize-ScenarioRoot ("invalid-existing-task-" + $invalidTaskCase)
@@ -776,10 +789,10 @@ try {
         switch ($invalidTaskCase) {
             'external-executable' { $invalidTask.Executable = 'C:\External\farpilot-host-runner.exe' }
             'wrong-arguments' { $invalidTask.Arguments = 'host start' }
-            'wrong-user' { $invalidTask.UserId = 'another-user' }
+            'wrong-user' { $invalidTask.UserId = 'S-1-5-21-2000' }
             'elevated-runlevel' { $invalidTask.RunLevel = 'Highest' }
             'wrong-trigger' { $invalidTask.Trigger = 'AtStartup' }
-            'wrong-trigger-user' { $invalidTask | Add-Member -NotePropertyName TriggerUserId -NotePropertyValue 'another-user' -Force }
+            'wrong-trigger-user' { $invalidTask | Add-Member -NotePropertyName TriggerUserId -NotePropertyValue 'S-1-5-21-2000' -Force }
             'wrong-logon-type' { $invalidTask | Add-Member -NotePropertyName LogonType -NotePropertyValue 'ServiceAccount' -Force }
         }
         Write-TestStateFile -LocalAppData $invalidTaskScenario -Name 'task' -Value $invalidTask
